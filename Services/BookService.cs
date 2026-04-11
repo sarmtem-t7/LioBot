@@ -160,7 +160,7 @@ public class BookService
 
         // Шаг 3: формируем ответ из данных базы — без дополнительных запросов к AI
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("📚 Вот что я нашёл для тебя:\n");
+        sb.AppendLine("📚 Вот что нашёл:\n");
 
         foreach (var book in selectedBooks)
         {
