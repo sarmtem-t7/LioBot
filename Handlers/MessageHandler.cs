@@ -68,14 +68,17 @@ public class MessageHandler
                 }
                 else
                 {
-                    await bot.SendTextMessageAsync(chatId, "Загружаю книгу по ссылке... ⏳", cancellationToken: ct);
+                    await bot.SendTextMessageAsync(chatId, "Загружаю книгу по ссылке... ⏳",
+                    disableWebPagePreview: true,
+                    cancellationToken: ct);
                     reply = await _bookService.AddBookFromUrlAsync(url);
                 }
             }
             else if (IsBookRequest(text))
             {
-                await bot.SendTextMessageAsync(chatId,
-                    "Ищу подходящие книги для тебя... 📖", cancellationToken: ct);
+                await bot.SendTextMessageAsync(chatId, "Ищу подходящие книги для тебя... 📖",
+                    disableWebPagePreview: true,
+                    cancellationToken: ct);
                 reply = await _bookService.RecommendBooksAsync(text);
             }
             else
@@ -84,7 +87,9 @@ public class MessageHandler
                 reply = await HandleFreeDialogAsync(text, telegramUser.FirstName);
             }
 
-            await bot.SendTextMessageAsync(chatId, reply, cancellationToken: ct);
+            await bot.SendTextMessageAsync(chatId, reply,
+                disableWebPagePreview: true,
+                cancellationToken: ct);
         }
         catch (Exception ex)
         {
