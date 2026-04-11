@@ -52,6 +52,70 @@ public class DatabaseContext
         // Migration: add Type column if DB existed before this feature
         cmd.CommandText = "ALTER TABLE Books ADD COLUMN Type TEXT NOT NULL DEFAULT 'book'";
         try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
+
+        // История сообщений
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS Messages (
+                Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                TelegramId INTEGER NOT NULL,
+                Role       TEXT NOT NULL,
+                Content    TEXT NOT NULL,
+                CreatedAt  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_telegram ON Messages(TelegramId, Id);
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    // --- Messages ---
+
+    public void SaveMessage(long telegramId, string role, string content)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO Messages (TelegramId, Role, Content, CreatedAt)
+            VALUES ($tid, $role, $content, $ts)
+            """;
+        cmd.Parameters.AddWithValue("$tid",     telegramId);
+        cmd.Parameters.AddWithValue("$role",    role);
+        cmd.Parameters.AddWithValue("$content", content);
+        cmd.Parameters.AddWithValue("$ts",      DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
+
+        // Оставляем только последние 20 сообщений на пользователя
+        cmd.Parameters.Clear();
+        cmd.CommandText = """
+            DELETE FROM Messages WHERE TelegramId = $tid
+            AND Id NOT IN (
+                SELECT Id FROM Messages WHERE TelegramId = $tid
+                ORDER BY Id DESC LIMIT 20
+            )
+            """;
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public List<(string Role, string Content)> GetHistory(long telegramId, int limit = 10)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT Role, Content FROM (
+                SELECT Id, Role, Content FROM Messages
+                WHERE TelegramId = $tid
+                ORDER BY Id DESC LIMIT $limit
+            ) ORDER BY Id ASC
+            """;
+        cmd.Parameters.AddWithValue("$tid",   telegramId);
+        cmd.Parameters.AddWithValue("$limit", limit);
+        using var reader = cmd.ExecuteReader();
+        var list = new List<(string, string)>();
+        while (reader.Read())
+            list.Add((reader.GetString(0), reader.GetString(1)));
+        return list;
     }
 
     // --- Users ---

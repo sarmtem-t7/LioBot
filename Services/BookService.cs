@@ -89,15 +89,31 @@ public class BookService
     /// Шаг 1: поиск по ключевым словам прямо в БД (без AI, без токенов).
     /// Шаг 2: из найденных AI выбирает лучшие 2-3.
     /// </summary>
-    public async Task<string> RecommendBooksAsync(string userRequest)
+    public async Task<string> RecommendBooksAsync(
+        string userRequest,
+        IEnumerable<(string Role, string Content)>? history = null)
     {
         var allBooks = _db.GetAllBooks();
         if (allBooks.Count == 0)
             return "К сожалению, в библиотеке пока нет книг. Мы уже работаем над этим! 📚";
 
-        // Шаг 1: ищем кандидатов по словам из запроса прямо в тегах/описании/названии
-        var keywords = userRequest.ToLowerInvariant()
-            .Split(' ', ',', '.', '!', '?')
+        // Контекст из истории — добавляем к запросу чтобы учесть интересы пользователя
+        var historyContext = "";
+        if (history != null)
+        {
+            var userMessages = history
+                .Where(h => h.Role == "user")
+                .TakeLast(5)
+                .Select(h => h.Content);
+            var joined = string.Join(" | ", userMessages);
+            if (!string.IsNullOrEmpty(joined))
+                historyContext = $"\nКонтекст из прошлых сообщений: {joined}";
+        }
+
+        // Шаг 1: ищем кандидатов по словам из запроса + истории
+        var searchText = (userRequest + " " + historyContext).ToLowerInvariant();
+        var keywords = searchText
+            .Split(' ', ',', '.', '!', '?', '|')
             .Where(w => w.Length > 3)
             .ToList();
 
@@ -116,21 +132,22 @@ public class BookService
             .Select(x => x.Book)
             .ToList();
 
-        // Если ничего не нашли по ключевым словам — берём случайные 20
         if (candidates.Count == 0)
             candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(20).ToList();
 
-        // Шаг 2: из 20 кандидатов AI выбирает 2-3 лучших (маленький каталог = мало токенов)
+        // Шаг 2: AI выбирает лучшие 2-3 с учётом контекста
         var catalog = string.Join("\n", candidates.Select(b =>
             $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
         var systemPrompt = """
             Ты — помощник книжного клуба. Выбери 2-3 книги из списка, которые лучше всего подходят к запросу.
+            Учитывай контекст из прошлых сообщений пользователя чтобы понять его ситуацию и интересы.
             Ответь ТОЛЬКО числами ID через запятую. Например: 3,7,12
             Только ID из списка, ничего лишнего.
             """;
 
-        var idsRaw = await _claude.AskAsync(systemPrompt, $"Список:\n{catalog}\n\nЗапрос: {userRequest}", maxTokens: 20);
+        var idsRaw = await _claude.AskAsync(systemPrompt,
+            $"Список:\n{catalog}\n\nЗапрос: {userRequest}{historyContext}", maxTokens: 20);
 
         var selectedBooks = ParseIds(idsRaw)
             .Select(id => candidates.FirstOrDefault(b => b.Id == id))

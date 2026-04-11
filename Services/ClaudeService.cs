@@ -19,21 +19,34 @@ public class ClaudeService
         _http = httpClientFactory.CreateClient("anthropic");
     }
 
-    public async Task<string> AskAsync(string systemPrompt, string userMessage, int maxTokens = 1024)
+    public Task<string> AskAsync(string systemPrompt, string userMessage, int maxTokens = 1024)
+        => AskWithHistoryAsync(systemPrompt, userMessage, history: null, maxTokens);
+
+    public async Task<string> AskWithHistoryAsync(
+        string systemPrompt,
+        string userMessage,
+        IEnumerable<(string Role, string Content)>? history,
+        int maxTokens = 1024)
     {
-        // Явно требуем русский язык на уровне системного промпта
         var fullSystem = "ВАЖНО: Отвечай ТОЛЬКО на русском языке. Не используй никакие другие языки, иероглифы или символы кроме русских, латинских букв, цифр и знаков препинания.\n\n" + systemPrompt;
+
+        var messages = new List<object>
+        {
+            new { role = "system", content = fullSystem }
+        };
+
+        if (history != null)
+            foreach (var (role, content) in history)
+                messages.Add(new { role, content });
+
+        messages.Add(new { role = "user", content = userMessage });
 
         var body = new
         {
             model = Model,
             max_tokens = maxTokens,
             temperature = 0.7,
-            messages = new[]
-            {
-                new { role = "system", content = fullSystem },
-                new { role = "user",   content = userMessage }
-            }
+            messages
         };
 
         var json = JsonSerializer.Serialize(body);

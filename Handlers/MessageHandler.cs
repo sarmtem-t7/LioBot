@@ -46,6 +46,7 @@ public class MessageHandler
         try
         {
             string reply;
+            var isCommand = text.StartsWith("/");
 
             if (text.StartsWith("/start"))
             {
@@ -77,12 +78,22 @@ public class MessageHandler
             {
                 await bot.SendMessage(chatId, "Ищу подходящие книги для тебя... 📖",
                     cancellationToken: ct);
-                reply = await _bookService.RecommendBooksAsync(text);
+                // Передаём историю чтобы не советовать уже рекомендованные книги
+                var history = _db.GetHistory(telegramUser.Id, limit: 10);
+                reply = await _bookService.RecommendBooksAsync(text, history);
             }
             else
             {
-                // Свободный диалог через Claude
-                reply = await HandleFreeDialogAsync(text, telegramUser.FirstName);
+                // Свободный диалог — с историей
+                var history = _db.GetHistory(telegramUser.Id, limit: 10);
+                reply = await HandleFreeDialogAsync(text, telegramUser.FirstName, history);
+            }
+
+            // Сохраняем сообщения в историю (кроме команд)
+            if (!isCommand)
+            {
+                _db.SaveMessage(telegramUser.Id, "user", text);
+                _db.SaveMessage(telegramUser.Id, "assistant", reply);
             }
 
             await bot.SendMessage(chatId, reply,
@@ -134,20 +145,24 @@ public class MessageHandler
             || lower.Contains("хочу читать");
     }
 
-    private async Task<string> HandleFreeDialogAsync(string userText, string firstName)
+    private async Task<string> HandleFreeDialogAsync(
+        string userText,
+        string firstName,
+        IEnumerable<(string Role, string Content)>? history = null)
     {
         var systemPrompt = $"""
             Ты — LioBot, тёплый помощник христианского книжного клуба.
             Ты общаешься с человеком по имени {firstName}.
             Отвечай на русском языке, тепло и по-дружески, в христианском духе.
-            Если человек спрашивает о книгах — помогай с выбором.
+            Используй историю переписки чтобы лучше понимать человека, его ситуацию и интересы.
+            Если человек спрашивает о книгах — помогай с выбором, учитывай что он уже читал или о чём говорил раньше.
             Если человек делится чем-то личным — поддержи его словом и, при уместности, стихом из Писания. Библейские стихи цитируй ТОЛЬКО по Синодальному переводу — дословно, без изменений.
             Если вопрос не связан с книгами или верой — мягко верни разговор к этим темам.
             Отвечай кратко — не более 3-4 предложений.
             ВАЖНО: ты бот, поэтому никогда не пиши "я молюсь за тебя", "буду молиться", "молюсь о тебе" и подобные фразы — ты не можешь молиться. Вместо этого пожелай чтобы Бог помог, благословил или поддержал человека.
             """;
 
-        return await _claude.AskAsync(systemPrompt, userText, maxTokens: 512);
+        return await _claude.AskWithHistoryAsync(systemPrompt, userText, history, maxTokens: 512);
     }
 
     private string BuildWelcomeMessage(string firstName) => $"""
