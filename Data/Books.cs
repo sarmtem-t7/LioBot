@@ -7,25 +7,24 @@ public static class BookSeeder
 {
     public static void SeedIfEmpty(DatabaseContext db)
     {
-        if (db.GetBooksCount() > 0)
-            return;
-
         var assembly = Assembly.GetExecutingAssembly();
 
-        var total = 0;
-        total += SeedFromResource(db, assembly, "LioBot.Data.books_seed.json", "book");
-        total += SeedFromResource(db, assembly, "LioBot.Data.audiobooks_seed.json", "audio");
+        // Seed regular books if none exist
+        if (db.GetCountByType("book") == 0)
+            SeedFromResource(db, assembly, "LioBot.Data.books_seed.json", "book");
 
-        Console.WriteLine($"[BookSeeder] Loaded {total} items into database.");
+        // Seed audio books if none exist
+        if (db.GetCountByType("audio") == 0)
+            SeedFromResource(db, assembly, "LioBot.Data.audiobooks_seed.json", "audio");
     }
 
-    private static int SeedFromResource(DatabaseContext db, Assembly assembly, string resourceName, string type)
+    private static void SeedFromResource(DatabaseContext db, Assembly assembly, string resourceName, string type)
     {
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null)
         {
             Console.WriteLine($"[BookSeeder] Resource not found: {resourceName}");
-            return 0;
+            return;
         }
 
         var books = JsonSerializer.Deserialize<List<SeedBook>>(stream) ?? [];
@@ -52,8 +51,7 @@ public static class BookSeeder
         }
 
         transaction.Commit();
-        Console.WriteLine($"[BookSeeder] Loaded {books.Count} {type}s from {resourceName}");
-        return books.Count;
+        Console.WriteLine($"[BookSeeder] Loaded {books.Count} {type}s.");
     }
 
     private record SeedBook(string? title, string? author, string? description, string? tags, string? url, string? type);

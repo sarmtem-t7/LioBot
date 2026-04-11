@@ -140,6 +140,16 @@ public class DatabaseContext
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
+    public int GetCountByType(string type)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM Books WHERE Type = $type";
+        cmd.Parameters.AddWithValue("$type", type);
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
     // --- Mappers ---
 
     private static User MapUser(SqliteDataReader r) => new()
