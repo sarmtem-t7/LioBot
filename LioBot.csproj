@@ -24,6 +24,7 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <EmbeddedResource Include="Data/books_seed.json" />
+    <EmbeddedResource Include="Data/audiobooks_seed.json" />
   </ItemGroup>
 
 </Project>

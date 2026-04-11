@@ -147,15 +147,21 @@ public class BookService
 
         foreach (var book in selectedBooks)
         {
-            sb.AppendLine($"📖 «{book.Title}» — {book.Author}");
+            var isAudio = book.Type == "audio";
+            var icon = isAudio ? "🎧" : "📖";
+            var label = isAudio ? "аудиокнига" : "книга";
+            sb.AppendLine($"{icon} «{book.Title}» — {book.Author} *({label})*");
             if (!string.IsNullOrEmpty(book.Description))
                 sb.AppendLine(book.Description.Trim());
             if (!string.IsNullOrEmpty(book.Url))
-                sb.AppendLine($"🔗 Читать: {book.Url}");
+            {
+                var linkLabel = isAudio ? "Слушать" : "Читать";
+                sb.AppendLine($"🔗 {linkLabel}: {book.Url}");
+            }
             sb.AppendLine();
         }
 
-        sb.AppendLine("Пусть чтение будет в радость и назидание! 🙏");
+        sb.AppendLine("Пусть слово Божье питает тебя! 🙏");
         return sb.ToString().Trim();
     }
 

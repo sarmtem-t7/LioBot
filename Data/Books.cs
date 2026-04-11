@@ -11,13 +11,24 @@ public static class BookSeeder
             return;
 
         var assembly = Assembly.GetExecutingAssembly();
-        const string resourceName = "LioBot.Data.books_seed.json";
 
-        using var stream = assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
+        var total = 0;
+        total += SeedFromResource(db, assembly, "LioBot.Data.books_seed.json", "book");
+        total += SeedFromResource(db, assembly, "LioBot.Data.audiobooks_seed.json", "audio");
 
-        var books = JsonSerializer.Deserialize<List<SeedBook>>(stream)
-            ?? throw new InvalidOperationException("Failed to deserialize books_seed.json");
+        Console.WriteLine($"[BookSeeder] Loaded {total} items into database.");
+    }
+
+    private static int SeedFromResource(DatabaseContext db, Assembly assembly, string resourceName, string type)
+    {
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+        {
+            Console.WriteLine($"[BookSeeder] Resource not found: {resourceName}");
+            return 0;
+        }
+
+        var books = JsonSerializer.Deserialize<List<SeedBook>>(stream) ?? [];
 
         using var conn = db.CreateConnection();
         conn.Open();
@@ -28,20 +39,22 @@ public static class BookSeeder
             var cmd = conn.CreateCommand();
             cmd.Transaction = transaction;
             cmd.CommandText = """
-                INSERT INTO Books (Title, Author, Description, Tags, Url)
-                VALUES ($title, $author, $desc, $tags, $url)
+                INSERT INTO Books (Title, Author, Description, Tags, Url, Type)
+                VALUES ($title, $author, $desc, $tags, $url, $type)
                 """;
             cmd.Parameters.AddWithValue("$title",  b.title ?? "");
             cmd.Parameters.AddWithValue("$author", b.author ?? "");
             cmd.Parameters.AddWithValue("$desc",   b.description ?? "");
             cmd.Parameters.AddWithValue("$tags",   b.tags ?? "");
             cmd.Parameters.AddWithValue("$url",    b.url ?? "");
+            cmd.Parameters.AddWithValue("$type",   b.type ?? type);
             cmd.ExecuteNonQuery();
         }
 
         transaction.Commit();
-        Console.WriteLine($"[BookSeeder] Loaded {books.Count} books into database.");
+        Console.WriteLine($"[BookSeeder] Loaded {books.Count} {type}s from {resourceName}");
+        return books.Count;
     }
 
-    private record SeedBook(string? title, string? author, string? description, string? tags, string? url);
+    private record SeedBook(string? title, string? author, string? description, string? tags, string? url, string? type);
 }

@@ -26,6 +26,8 @@ public class DatabaseContext
         conn.Open();
 
         var cmd = conn.CreateCommand();
+
+        // Create tables
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS Users (
                 Id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,10 +43,15 @@ public class DatabaseContext
                 Author      TEXT NOT NULL,
                 Description TEXT NOT NULL,
                 Tags        TEXT NOT NULL,
-                Url         TEXT NOT NULL DEFAULT ''
+                Url         TEXT NOT NULL DEFAULT '',
+                Type        TEXT NOT NULL DEFAULT 'book'
             );
             """;
         cmd.ExecuteNonQuery();
+
+        // Migration: add Type column if DB existed before this feature
+        cmd.CommandText = "ALTER TABLE Books ADD COLUMN Type TEXT NOT NULL DEFAULT 'book'";
+        try { cmd.ExecuteNonQuery(); } catch { /* column already exists */ }
     }
 
     // --- Users ---
@@ -99,7 +106,7 @@ public class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url FROM Books";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type FROM Books";
         using var reader = cmd.ExecuteReader();
         var list = new List<Book>();
         while (reader.Read()) list.Add(MapBook(reader));
@@ -112,14 +119,15 @@ public class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO Books (Title, Author, Description, Tags, Url)
-            VALUES ($title, $author, $desc, $tags, $url)
+            INSERT INTO Books (Title, Author, Description, Tags, Url, Type)
+            VALUES ($title, $author, $desc, $tags, $url, $type)
             """;
         cmd.Parameters.AddWithValue("$title",  book.Title);
         cmd.Parameters.AddWithValue("$author", book.Author);
         cmd.Parameters.AddWithValue("$desc",   book.Description);
         cmd.Parameters.AddWithValue("$tags",   book.Tags);
         cmd.Parameters.AddWithValue("$url",    book.Url);
+        cmd.Parameters.AddWithValue("$type",   book.Type);
         cmd.ExecuteNonQuery();
     }
 
@@ -150,6 +158,7 @@ public class DatabaseContext
         Author      = r.GetString(2),
         Description = r.GetString(3),
         Tags        = r.GetString(4),
-        Url         = r.IsDBNull(5) ? string.Empty : r.GetString(5)
+        Url         = r.IsDBNull(5) ? string.Empty : r.GetString(5),
+        Type        = r.IsDBNull(6) ? "book" : r.GetString(6)
     };
 }
