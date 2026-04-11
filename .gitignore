@@ -1,0 +1,5 @@
+bin/
+obj/
+*.user
+liobot.db
+import_books.py
