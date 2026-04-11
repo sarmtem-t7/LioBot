@@ -61,8 +61,8 @@ public class MorningMessageJob : IJob
         {
             try
             {
-                await _bot.SendTextMessageAsync(user.TelegramId, message,
-                    disableWebPagePreview: true);
+                await _bot.SendMessage(user.TelegramId, message,
+                    linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
                 await Task.Delay(50); // небольшая задержка, чтобы не упереться в лимиты Telegram
             }
             catch (Exception ex)

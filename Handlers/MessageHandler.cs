@@ -68,16 +68,14 @@ public class MessageHandler
                 }
                 else
                 {
-                    await bot.SendTextMessageAsync(chatId, "Загружаю книгу по ссылке... ⏳",
-                    disableWebPagePreview: true,
-                    cancellationToken: ct);
+                    await bot.SendMessage(chatId, "Загружаю книгу по ссылке... ⏳",
+                        cancellationToken: ct);
                     reply = await _bookService.AddBookFromUrlAsync(url);
                 }
             }
             else if (IsBookRequest(text))
             {
-                await bot.SendTextMessageAsync(chatId, "Ищу подходящие книги для тебя... 📖",
-                    disableWebPagePreview: true,
+                await bot.SendMessage(chatId, "Ищу подходящие книги для тебя... 📖",
                     cancellationToken: ct);
                 reply = await _bookService.RecommendBooksAsync(text);
             }
@@ -87,14 +85,14 @@ public class MessageHandler
                 reply = await HandleFreeDialogAsync(text, telegramUser.FirstName);
             }
 
-            await bot.SendTextMessageAsync(chatId, reply,
-                disableWebPagePreview: true,
+            await bot.SendMessage(chatId, reply,
+                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
                 cancellationToken: ct);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Bot] Ошибка при обработке сообщения от {User}", telegramUser.FirstName);
-            await bot.SendTextMessageAsync(chatId,
+            await bot.SendMessage(chatId,
                 "Прости, что-то пошло не так. Попробуй снова 🙏", cancellationToken: ct);
         }
     }

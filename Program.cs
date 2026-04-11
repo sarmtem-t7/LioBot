@@ -79,20 +79,20 @@ public class BotPollingService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var me = await _bot.GetMeAsync(stoppingToken);
+        var me = await _bot.GetMe(stoppingToken);
         _logger.LogInformation("[Bot] Запущен как @{Username}", me.Username);
 
         var options = new ReceiverOptions
         {
             AllowedUpdates = new[] { Telegram.Bot.Types.Enums.UpdateType.Message },
-            ThrowPendingUpdates = true
+            DropPendingUpdates = true
         };
 
         await _bot.ReceiveAsync(
-            updateHandler:        _handler.HandleUpdateAsync,
-            pollingErrorHandler:  _handler.HandlePollingErrorAsync,
-            receiverOptions:      options,
-            cancellationToken:    stoppingToken
+            updateHandler:  _handler.HandleUpdateAsync,
+            errorHandler:   _handler.HandlePollingErrorAsync,
+            receiverOptions: options,
+            cancellationToken: stoppingToken
         );
     }
 }
