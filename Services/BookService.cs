@@ -149,20 +149,25 @@ public class BookService
         {
             var isAudio = book.Type == "audio";
             var icon = isAudio ? "🎧" : "📖";
-            var label = isAudio ? "аудиокнига" : "книга";
-            sb.AppendLine($"{icon} <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)} ({label})");
-            if (!string.IsNullOrEmpty(book.Description))
-                sb.AppendLine(EscapeHtml(book.Description.Trim()));
+            var shortDesc = TruncateDesc(book.Description, 100);
+            var linkLabel = isAudio ? "Слушать" : "Читать";
+            sb.Append($"{icon} <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
+            if (!string.IsNullOrEmpty(shortDesc))
+                sb.Append($"\n{EscapeHtml(shortDesc)}");
             if (!string.IsNullOrEmpty(book.Url))
-            {
-                var linkLabel = isAudio ? "🎧 Слушать" : "📖 Читать";
-                sb.AppendLine($"<a href=\"{book.Url}\">{linkLabel}</a>");
-            }
-            sb.AppendLine();
+                sb.Append($" <a href=\"{book.Url}\">→ {linkLabel}</a>");
+            sb.AppendLine("\n");
         }
-
-        sb.AppendLine("Пусть слово Божье питает тебя! 🙏");
         return sb.ToString().Trim();
+    }
+
+    private static string TruncateDesc(string text, int maxLen)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        text = text.Trim();
+        if (text.Length <= maxLen) return text;
+        var cut = text.LastIndexOf(' ', maxLen);
+        return (cut > 0 ? text[..cut] : text[..maxLen]) + "...";
     }
 
     private static string EscapeHtml(string text) =>
