@@ -54,6 +54,7 @@ var host = builder.Build();
 // --- Инициализация БД ---
 var db = host.Services.GetRequiredService<DatabaseContext>();
 db.Initialize();
+LioBot.Data.BookSeeder.SeedIfEmpty(db);
 
 await host.RunAsync();
 

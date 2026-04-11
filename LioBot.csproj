@@ -23,6 +23,7 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <EmbeddedResource Include="Data/books_seed.json" />
   </ItemGroup>
 
 </Project>

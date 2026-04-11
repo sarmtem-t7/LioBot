@@ -1,147 +1,47 @@
-using LioBot.Models;
-using Microsoft.Data.Sqlite;
+using System.Reflection;
+using System.Text.Json;
 
 namespace LioBot.Data;
 
-/// <summary>
-/// Первоначальное наполнение базы книгами.
-/// Вызывается один раз при старте, если таблица пуста.
-/// </summary>
 public static class BookSeeder
 {
-    public static void Seed(DatabaseContext db)
+    public static void SeedIfEmpty(DatabaseContext db)
     {
-        if (db.GetBooksCount() > 0) return;
+        if (db.GetBooksCount() > 0)
+            return;
 
-        var books = new List<Book>
-        {
-            new()
-            {
-                Title = "Простая христианская вера",
-                Author = "К. С. Льюис",
-                Description = "Ясное и доступное изложение основ христианской веры. Льюис объясняет ключевые истины Евангелия простым языком для всех — верующих и сомневающихся.",
-                Tags = "вера, основы, апологетика, для начинающих, Льюис"
-            },
-            new()
-            {
-                Title = "Исповедь",
-                Author = "Блаженный Августин",
-                Description = "Автобиографическая история духовного поиска и обращения к Богу. Книга о грехе, благодати и бесконечной любви Бога к человеку.",
-                Tags = "покаяние, духовный поиск, благодать, классика, обращение"
-            },
-            new()
-            {
-                Title = "Путешествие пилигрима",
-                Author = "Джон Буньян",
-                Description = "Аллегорическое путешествие христианина от Города Разрушения до Небесного Града. Одна из самых читаемых христианских книг в истории.",
-                Tags = "путь веры, испытания, стойкость, аллегория, классика"
-            },
-            new()
-            {
-                Title = "Подражание Христу",
-                Author = "Фома Кемпийский",
-                Description = "Руководство по духовной жизни, написанное в XV веке. Глубокие размышления о смирении, молитве и следовании за Христом.",
-                Tags = "смирение, молитва, духовная жизнь, классика, посвящение"
-            },
-            new()
-            {
-                Title = "Пределы любви Бога",
-                Author = "Филип Янси",
-                Description = "Исследование природы Божьей любви и благодати. Янси показывает, что Бог любит нас не за заслуги, а просто потому что мы Его дети.",
-                Tags = "Божья любовь, благодать, сомнения, утешение, Янси"
-            },
-            new()
-            {
-                Title = "Разочарование в Боге",
-                Author = "Филип Янси",
-                Description = "Честный разговор о трёх вопросах, которые задаёт каждый верующий: Бог молчит, Бог несправедлив, Бог скрывается. Книга для тех, кто переживает кризис веры.",
-                Tags = "кризис веры, сомнения, страдание, вопросы к Богу, Янси"
-            },
-            new()
-            {
-                Title = "Молитва",
-                Author = "Филип Янси",
-                Description = "Глубокое исследование природы молитвы: почему она работает, почему иногда кажется, что Бог не отвечает, и как выстроить живые отношения с Богом.",
-                Tags = "молитва, отношения с Богом, духовная жизнь, Янси"
-            },
-            new()
-            {
-                Title = "Цель жизни",
-                Author = "Рик Уоррен",
-                Description = "40-дневное путешествие к пониманию своего предназначения. Книга помогает ответить на вопрос: «Зачем я здесь?»",
-                Tags = "призвание, цель, предназначение, для начинающих, практика"
-            },
-            new()
-            {
-                Title = "Духовные упражнения",
-                Author = "Игнатий Лойола",
-                Description = "Классическое руководство по духовной практике: молитва, размышление, различение духов. Используется в духовных ретритах по всему миру.",
-                Tags = "духовная практика, молитва, различение, ретрит, классика"
-            },
-            new()
-            {
-                Title = "Братья Карамазовы",
-                Author = "Фёдор Достоевский",
-                Description = "Великий роман о вере, сомнении, грехе и искуплении. Один из самых глубоких литературных разговоров о природе Бога и человека.",
-                Tags = "вера и сомнение, грех, искупление, Достоевский, русская классика"
-            },
-            new()
-            {
-                Title = "Идиот",
-                Author = "Фёдор Достоевский",
-                Description = "История о человеке, пытающемся жить по образу Христа в грешном мире. Роман о красоте, любви и невозможности добра в падшем мире.",
-                Tags = "Христос, красота, любовь, добро, Достоевский"
-            },
-            new()
-            {
-                Title = "Нарнийские хроники",
-                Author = "К. С. Льюис",
-                Description = "Цикл сказочных историй, в которых христианские истины облечены в образы. Аслан — символ Христа, спасение и воскресение — центральные темы.",
-                Tags = "аллегория, Христос, спасение, воскресение, для всех, Льюис"
-            },
-            new()
-            {
-                Title = "Сила слабости",
-                Author = "Чак Коллинс",
-                Description = "Книга о том, как Бог использует наши слабости и несовершенства для Своей славы. Для тех, кто чувствует себя недостаточно сильным или достойным.",
-                Tags = "слабость, смирение, Божья сила, утешение, практика"
-            },
-            new()
-            {
-                Title = "Дорогой Баламут",
-                Author = "К. С. Льюис",
-                Description = "Переписка старшего беса с молодым в жанре сатиры. Льюис показывает, как дьявол искушает людей через мелкие повседневные соблазны.",
-                Tags = "искушение, духовная война, юмор, Льюис, апологетика"
-            },
-            new()
-            {
-                Title = "Знакомство с Библией",
-                Author = "Джон Стотт",
-                Description = "Систематическое введение в Священное Писание для всех, кто хочет читать и понимать Библию. Просто, ясно и глубоко.",
-                Tags = "Библия, изучение, для начинающих, основы, Священное Писание"
-            },
-        };
+        var assembly = Assembly.GetExecutingAssembly();
+        const string resourceName = "LioBot.Data.books_seed.json";
+
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found.");
+
+        var books = JsonSerializer.Deserialize<List<SeedBook>>(stream)
+            ?? throw new InvalidOperationException("Failed to deserialize books_seed.json");
 
         using var conn = db.CreateConnection();
         conn.Open();
         using var transaction = conn.BeginTransaction();
 
-        foreach (var book in books)
+        foreach (var b in books)
         {
             var cmd = conn.CreateCommand();
             cmd.Transaction = transaction;
             cmd.CommandText = """
-                INSERT INTO Books (Title, Author, Description, Tags)
-                VALUES ($title, $author, $desc, $tags)
+                INSERT INTO Books (Title, Author, Description, Tags, Url)
+                VALUES ($title, $author, $desc, $tags, $url)
                 """;
-            cmd.Parameters.AddWithValue("$title",  book.Title);
-            cmd.Parameters.AddWithValue("$author", book.Author);
-            cmd.Parameters.AddWithValue("$desc",   book.Description);
-            cmd.Parameters.AddWithValue("$tags",   book.Tags);
+            cmd.Parameters.AddWithValue("$title",  b.title ?? "");
+            cmd.Parameters.AddWithValue("$author", b.author ?? "");
+            cmd.Parameters.AddWithValue("$desc",   b.description ?? "");
+            cmd.Parameters.AddWithValue("$tags",   b.tags ?? "");
+            cmd.Parameters.AddWithValue("$url",    b.url ?? "");
             cmd.ExecuteNonQuery();
         }
 
         transaction.Commit();
-        Console.WriteLine($"[Seeder] Добавлено {books.Count} книг в базу данных.");
+        Console.WriteLine($"[BookSeeder] Loaded {books.Count} books into database.");
     }
+
+    private record SeedBook(string? title, string? author, string? description, string? tags, string? url);
 }

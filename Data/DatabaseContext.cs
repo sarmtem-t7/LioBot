@@ -10,7 +10,11 @@ public class DatabaseContext
 
     public DatabaseContext(IConfiguration configuration)
     {
-        var dbPath = Path.Combine(AppContext.BaseDirectory, "liobot.db");
+        var dataDir = configuration["DATA_PATH"]
+            ?? Environment.GetEnvironmentVariable("DATA_PATH")
+            ?? AppContext.BaseDirectory;
+        Directory.CreateDirectory(dataDir);
+        var dbPath = Path.Combine(dataDir, "liobot.db");
         _connectionString = $"Data Source={dbPath}";
     }
 
