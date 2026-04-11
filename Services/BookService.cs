@@ -150,13 +150,13 @@ public class BookService
             var isAudio = book.Type == "audio";
             var icon = isAudio ? "🎧" : "📖";
             var label = isAudio ? "аудиокнига" : "книга";
-            sb.AppendLine($"{icon} «{book.Title}» — {book.Author} *({label})*");
+            sb.AppendLine($"{icon} <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)} ({label})");
             if (!string.IsNullOrEmpty(book.Description))
-                sb.AppendLine(book.Description.Trim());
+                sb.AppendLine(EscapeHtml(book.Description.Trim()));
             if (!string.IsNullOrEmpty(book.Url))
             {
-                var linkLabel = isAudio ? "Слушать" : "Читать";
-                sb.AppendLine($"🔗 {linkLabel}: {book.Url}");
+                var linkLabel = isAudio ? "🎧 Слушать" : "📖 Читать";
+                sb.AppendLine($"<a href=\"{book.Url}\">{linkLabel}</a>");
             }
             sb.AppendLine();
         }
@@ -164,6 +164,9 @@ public class BookService
         sb.AppendLine("Пусть слово Божье питает тебя! 🙏");
         return sb.ToString().Trim();
     }
+
+    private static string EscapeHtml(string text) =>
+        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     private static List<long> ParseIds(string raw)
     {

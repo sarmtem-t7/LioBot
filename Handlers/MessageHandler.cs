@@ -86,6 +86,7 @@ public class MessageHandler
             }
 
             await bot.SendMessage(chatId, reply,
+                parseMode: Telegram.Bot.Types.Enums.ParseMode.Html,
                 linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
                 cancellationToken: ct);
         }
