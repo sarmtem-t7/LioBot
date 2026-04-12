@@ -368,8 +368,11 @@ public class MessageHandler
                     break;
 
                 case "menu:back":
-                    reply = $"Главное меню"; keyboard = MainMenuKeyboard();
-                    break;
+                    await bot.EditMessageText(chatId, messageId,
+                        "👋 Выбери что тебя интересует:",
+                        replyMarkup: MainMenuKeyboard(),
+                        cancellationToken: ct);
+                    return;
 
                 default:
                     return;
@@ -496,6 +499,7 @@ public class MessageHandler
 
         buttons.Add(navRow.ToArray());
         buttons.Add([InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend")]);
+        buttons.Add([HomeButton()]);
 
         return (text, new InlineKeyboardMarkup(buttons));
     }
@@ -503,6 +507,9 @@ public class MessageHandler
     // ════════════════════════════════════════════════════════════
     // Клавиатуры
     // ════════════════════════════════════════════════════════════
+
+    private static InlineKeyboardButton HomeButton() =>
+        InlineKeyboardButton.WithCallbackData("🏠 На главную", "menu:back");
 
     private static InlineKeyboardMarkup MainMenuKeyboard() => new(new[]
     {
@@ -527,7 +534,10 @@ public class MessageHandler
             ]);
         }
         rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другие книги", "recommend:more")]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("📋 Весь каталог", "catalog:all:0")]);
+        rows.Add([
+            InlineKeyboardButton.WithCallbackData("📋 Каталог",    "catalog:all:0"),
+            HomeButton()
+        ]);
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -537,17 +547,20 @@ public class MessageHandler
         {
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("✅ Прочитал",      $"book:read:{book.Id}"),
-                InlineKeyboardButton.WithCallbackData("❌ Скрыть",        $"book:ignore:{book.Id}")
+                InlineKeyboardButton.WithCallbackData("✅ Прочитал",   $"book:read:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
             },
-            new[] { InlineKeyboardButton.WithCallbackData("🔍 Похожие книги",  $"book:similar:{book.Id}") }
+            new[] { InlineKeyboardButton.WithCallbackData("🔍 Похожие книги", $"book:similar:{book.Id}") }
         };
         if (!string.IsNullOrEmpty(book.Url))
         {
             var linkLabel = book.Type == "audio" ? "🎧 Слушать" : "📖 Читать";
             rows.Add([InlineKeyboardButton.WithUrl(linkLabel, book.Url)]);
         }
-        rows.Add([InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0")]);
+        rows.Add([
+            InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0"),
+            HomeButton()
+        ]);
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -559,7 +572,7 @@ public class MessageHandler
                 .Select(t => InlineKeyboardButton.WithCallbackData(t.Label, $"topic:{t.Tag}"))
                 .ToArray())
             .ToList();
-        topicRows.Add([InlineKeyboardButton.WithCallbackData("← Назад", "menu:back")]);
+        topicRows.Add([HomeButton()]);
         return new InlineKeyboardMarkup(topicRows);
     }
 
@@ -579,7 +592,7 @@ public class MessageHandler
                 InlineKeyboardButton.WithCallbackData(
                     current == "off" ? "🔕 Выключено ✓" : "🔕 Выключить", "notify:off")
             },
-            new[] { InlineKeyboardButton.WithCallbackData("← Назад", "menu:back") }
+            new[] { HomeButton() }
         });
     }
 
@@ -587,7 +600,8 @@ public class MessageHandler
     {
         new[] { InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend") },
         new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",        "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("📋 Каталог",         "menu:catalog") }
+                InlineKeyboardButton.WithCallbackData("📋 Каталог",         "menu:catalog") },
+        new[] { HomeButton() }
     });
 
     // ════════════════════════════════════════════════════════════
