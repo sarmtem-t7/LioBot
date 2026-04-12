@@ -23,7 +23,7 @@ builder.Services.AddHttpClient("anthropic");
 
 // --- Сервисы приложения ---
 builder.Services.AddSingleton<DatabaseContext>();
-builder.Services.AddSingleton<ClaudeService>();
+builder.Services.AddSingleton<GroqService>();
 builder.Services.AddSingleton<BookService>();
 builder.Services.AddSingleton<MessageHandler>();
 
@@ -84,7 +84,12 @@ public class BotPollingService : BackgroundService
 
         var options = new ReceiverOptions
         {
-            AllowedUpdates = new[] { Telegram.Bot.Types.Enums.UpdateType.Message },
+            AllowedUpdates = new[]
+            {
+                Telegram.Bot.Types.Enums.UpdateType.Message,
+                Telegram.Bot.Types.Enums.UpdateType.CallbackQuery,
+                Telegram.Bot.Types.Enums.UpdateType.InlineQuery
+            },
             DropPendingUpdates = true
         };
 

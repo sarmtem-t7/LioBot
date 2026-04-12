@@ -5,14 +5,14 @@ using Microsoft.Extensions.Configuration;
 
 namespace LioBot.Services;
 
-public class ClaudeService
+public class GroqService
 {
     private readonly HttpClient _http;
     private readonly string _apiKey;
     private const string Model = "llama-3.3-70b-versatile";
     private const string ApiUrl = "https://api.groq.com/openai/v1/chat/completions";
 
-    public ClaudeService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
+    public GroqService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
     {
         _apiKey = configuration["GroqApiKey"]
             ?? throw new InvalidOperationException("GroqApiKey не задан в конфигурации.");
@@ -45,7 +45,7 @@ public class ClaudeService
         {
             model = Model,
             max_tokens = maxTokens,
-            temperature = 0.7,
+            temperature = 0.85,
             messages
         };
 
@@ -62,7 +62,7 @@ public class ClaudeService
         if (!response.IsSuccessStatusCode)
         {
             Console.WriteLine($"[Groq] Ошибка {response.StatusCode}: {responseBody}");
-            return "Прости, что-то пошло не так. Попробуй снова чуть позже 🙏";
+            throw new HttpRequestException($"Groq API error {(int)response.StatusCode}: {responseBody}");
         }
 
         using var doc = JsonDocument.Parse(responseBody);

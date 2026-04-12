@@ -1,29 +1,50 @@
-using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using LioBot.Data;
 using LioBot.Models;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace LioBot.Services;
 
 public class BookService
 {
     private readonly DatabaseContext _db;
-    private readonly ClaudeService _claude;
+    private readonly GroqService _groq;
     private readonly HttpClient _http;
+    private readonly ILogger<BookService> _logger;
+    private readonly string _allowedBookDomain;
 
-    public BookService(DatabaseContext db, ClaudeService claude, IHttpClientFactory httpClientFactory)
+    public BookService(
+        DatabaseContext db,
+        GroqService groq,
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration,
+        ILogger<BookService> logger)
     {
         _db = db;
-        _claude = claude;
+        _groq = groq;
         _http = httpClientFactory.CreateClient();
+        _logger = logger;
+        _allowedBookDomain = configuration["AllowedBookDomain"] ?? "lio-int.com";
     }
 
-    /// <summary>
-    /// Загружает страницу по URL, извлекает данные о книге через AI и сохраняет в БД.
-    /// </summary>
+    // ────────────────────────────────────────────────────────────
+    // Добавление книги по URL
+    // ────────────────────────────────────────────────────────────
+
     public async Task<string> AddBookFromUrlAsync(string url)
     {
-        // Загружаем страницу
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "https" && uri.Scheme != "http"))
+            return "Некорректная ссылка. Укажи полный URL, начинающийся с https://";
+
+        if (!uri.Host.EndsWith(_allowedBookDomain, StringComparison.OrdinalIgnoreCase))
+            return $"Добавлять книги можно только с сайта {_allowedBookDomain}.";
+
+        if (_db.BookExistsByUrl(url))
+            return "Книга по этой ссылке уже есть в каталоге.";
+
         string html;
         try
         {
@@ -35,13 +56,10 @@ public class BookService
             return $"Не удалось загрузить страницу: {ex.Message}";
         }
 
-        // Убираем HTML-теги, оставляем текст
         var text = Regex.Replace(html, "<[^>]+>", " ");
         text = Regex.Replace(text, @"\s{2,}", " ").Trim();
-        // Берём первые 3000 символов — этого достаточно для заголовка и описания
         if (text.Length > 3000) text = text[..3000];
 
-        // Просим AI извлечь данные
         var systemPrompt = """
             Ты — помощник, который извлекает информацию о книге из текста веб-страницы.
             Верни ответ СТРОГО в формате (каждое поле на новой строке):
@@ -53,9 +71,17 @@ public class BookService
             Отвечай только на русском языке.
             """;
 
-        var aiResponse = await _claude.AskAsync(systemPrompt, $"Текст страницы:\n{text}", maxTokens: 400);
+        string aiResponse;
+        try
+        {
+            aiResponse = await _groq.AskAsync(systemPrompt, $"Текст страницы:\n{text}", maxTokens: 400);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[BookService] AI недоступен при добавлении книги");
+            return "Сервис временно недоступен. Попробуй чуть позже.";
+        }
 
-        // Парсим ответ AI
         var title       = ExtractField(aiResponse, "НАЗВАНИЕ");
         var author      = ExtractField(aiResponse, "АВТОР");
         var description = ExtractField(aiResponse, "ОПИСАНИЕ");
@@ -63,6 +89,9 @@ public class BookService
 
         if (string.IsNullOrWhiteSpace(title) || title == "Не указано")
             return "Не удалось определить название книги. Попробуй другую ссылку.";
+
+        if (_db.BookExistsByTitle(title))
+            return $"Книга «{title}» уже есть в каталоге.";
 
         var book = new Book
         {
@@ -74,43 +103,33 @@ public class BookService
         };
 
         _db.AddBook(book);
-
         return $"✅ Книга добавлена!\n\n📖 «{book.Title}»\n👤 {book.Author}\n\n{book.Description}";
     }
 
-    private static string ExtractField(string text, string field)
-    {
-        var match = Regex.Match(text, $@"{field}:\s*(.+?)(?:\n|$)", RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value.Trim() : string.Empty;
-    }
+    // ────────────────────────────────────────────────────────────
+    // Рекомендации
+    // ────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Подбирает книги под запрос пользователя.
-    /// Шаг 1: поиск по ключевым словам прямо в БД (без AI, без токенов).
-    /// Шаг 2: из найденных AI выбирает лучшие 2-3.
-    /// </summary>
-    public async Task<string> RecommendBooksAsync(
+    public async Task<RecommendationResult> RecommendBooksAsync(
         string userRequest,
-        IEnumerable<(string Role, string Content)>? history = null)
+        IEnumerable<(string Role, string Content)>? history = null,
+        long telegramId = 0)
     {
         var allBooks = _db.GetAllBooks();
         if (allBooks.Count == 0)
-            return "К сожалению, в библиотеке пока нет книг. Мы уже работаем над этим! 📚";
+            return new RecommendationResult("К сожалению, в библиотеке пока нет книг. Мы уже работаем над этим! 📚", []);
 
-        // Контекст из истории — добавляем к запросу чтобы учесть интересы пользователя
-        var historyContext = "";
-        if (history != null)
+        // Собираем ID книг, которые нужно исключить
+        var excludeIds = new HashSet<long>();
+        if (telegramId > 0)
         {
-            var userMessages = history
-                .Where(h => h.Role == "user")
-                .TakeLast(5)
-                .Select(h => h.Content);
-            var joined = string.Join(" | ", userMessages);
-            if (!string.IsNullOrEmpty(joined))
-                historyContext = $"\nКонтекст из прошлых сообщений: {joined}";
+            foreach (var id in _db.GetSeenBookIds(telegramId))    excludeIds.Add(id);
+            foreach (var id in _db.GetIgnoredBookIds(telegramId)) excludeIds.Add(id);
         }
 
-        // Шаг 1: ищем кандидатов по словам из запроса + истории
+        var historyContext = BuildHistoryContext(history);
+
+        // Шаг 1: поиск кандидатов по ключевым словам
         var searchText = (userRequest + " " + historyContext).ToLowerInvariant();
         var keywords = searchText
             .Split(' ', ',', '.', '!', '?', '|')
@@ -120,7 +139,7 @@ public class BookService
         var candidates = allBooks
             .Select(b => new
             {
-                Book = b,
+                Book  = b,
                 Score = keywords.Count(kw =>
                     b.Tags.ToLower().Contains(kw) ||
                     b.Title.ToLower().Contains(kw) ||
@@ -135,47 +154,213 @@ public class BookService
         if (candidates.Count == 0)
             candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(20).ToList();
 
-        // Шаг 2: AI выбирает лучшие 2-3 с учётом контекста
-        var catalog = string.Join("\n", candidates.Select(b =>
-            $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
+        // Исключаем виденные / скрытые (если остаётся достаточно)
+        var fresh = candidates.Where(b => !excludeIds.Contains(b.Id)).ToList();
+        if (fresh.Count >= 2) candidates = fresh;
 
-        var systemPrompt = """
-            Ты — помощник книжного клуба. Выбери 2-3 книги из списка, которые лучше всего подходят к запросу.
-            Учитывай контекст из прошлых сообщений пользователя чтобы понять его ситуацию и интересы.
-            Ответь ТОЛЬКО числами ID через запятую. Например: 3,7,12
-            Только ID из списка, ничего лишнего.
-            """;
+        // Шаг 2: AI выбирает лучшие 2-3
+        List<Book> selectedBooks;
+        try
+        {
+            var catalog = string.Join("\n", candidates.Select(b =>
+                $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
-        var idsRaw = await _claude.AskAsync(systemPrompt,
-            $"Список:\n{catalog}\n\nЗапрос: {userRequest}{historyContext}", maxTokens: 20);
+            var idsRaw = await _groq.AskAsync(
+                "Ты помощник книжного клуба. Выбери 2-3 книги из списка, подходящие к запросу. Учитывай контекст. Ответь ТОЛЬКО числами ID через запятую. Ничего лишнего.",
+                $"Список:\n{catalog}\n\nЗапрос: {userRequest}{historyContext}",
+                maxTokens: 20);
 
-        var selectedBooks = ParseIds(idsRaw)
-            .Select(id => candidates.FirstOrDefault(b => b.Id == id))
-            .Where(b => b != null)
-            .Cast<Book>()
-            .ToList();
+            selectedBooks = ParseIds(idsRaw)
+                .Select(id => candidates.FirstOrDefault(b => b.Id == id))
+                .Where(b => b != null)
+                .Cast<Book>()
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[BookService] AI недоступен, fallback на топ кандидатов");
+            selectedBooks = [];
+        }
 
         if (selectedBooks.Count == 0)
             selectedBooks = candidates.Take(2).ToList();
 
-        // Шаг 3: формируем ответ из данных базы — без дополнительных запросов к AI
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("📚 Вот что нашёл:\n");
+        if (telegramId > 0)
+            _db.MarkBooksAsSeen(telegramId, selectedBooks.Select(b => b.Id));
 
-        foreach (var book in selectedBooks)
+        return new RecommendationResult(FormatBookList("📚 Вот что нашёл:", selectedBooks), selectedBooks);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Похожие книги
+    // ────────────────────────────────────────────────────────────
+
+    public async Task<RecommendationResult> GetSimilarBooksAsync(long bookId, long telegramId = 0)
+    {
+        var source = _db.GetBookById(bookId);
+        if (source == null)
+            return new RecommendationResult("Книга не найдена.", []);
+
+        var excludeIds = new HashSet<long> { bookId };
+        if (telegramId > 0)
+            foreach (var id in _db.GetIgnoredBookIds(telegramId)) excludeIds.Add(id);
+
+        var allBooks = _db.GetAllBooks().Where(b => !excludeIds.Contains(b.Id)).ToList();
+
+        var sourceTags = source.Tags.ToLower()
+            .Split(',', ' ').Where(t => t.Length > 2).ToHashSet();
+
+        var candidates = allBooks
+            .Select(b => new { Book = b, Score = sourceTags.Count(t => b.Tags.ToLower().Contains(t)) })
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .Take(20)
+            .Select(x => x.Book)
+            .ToList();
+
+        if (candidates.Count == 0)
+            candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(5).ToList();
+
+        // Исключаем уже виденные (если остаётся достаточно)
+        if (telegramId > 0)
+        {
+            var seenIds = _db.GetSeenBookIds(telegramId);
+            var fresh = candidates.Where(b => !seenIds.Contains(b.Id)).ToList();
+            if (fresh.Count >= 2) candidates = fresh;
+        }
+
+        List<Book> selected;
+        try
+        {
+            var catalog = string.Join("\n", candidates.Select(b =>
+                $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
+
+            var idsRaw = await _groq.AskAsync(
+                "Ты помощник книжного клуба. Ответь ТОЛЬКО числами ID через запятую. Ничего лишнего.",
+                $"Список:\n{catalog}\n\nВыбери 2-3 книги, похожие на «{source.Title}» (теги: {source.Tags}). Только ID.",
+                maxTokens: 20);
+
+            selected = ParseIds(idsRaw)
+                .Select(id => candidates.FirstOrDefault(b => b.Id == id))
+                .Where(b => b != null)
+                .Cast<Book>()
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[BookService] AI недоступен при поиске похожих");
+            selected = [];
+        }
+
+        if (selected.Count == 0)
+            selected = candidates.Take(2).ToList();
+
+        if (telegramId > 0)
+            _db.MarkBooksAsSeen(telegramId, selected.Select(b => b.Id));
+
+        return new RecommendationResult(
+            FormatBookList($"🔍 Похожие на «{EscapeHtml(source.Title)}»:", selected),
+            selected);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Поиск
+    // ────────────────────────────────────────────────────────────
+
+    public List<Book> SearchBooks(string query)
+    {
+        var books = _db.GetAllBooks();
+        if (string.IsNullOrWhiteSpace(query)) return books.Take(5).ToList();
+
+        var keywords = query.ToLowerInvariant()
+            .Split(' ', ',', '.').Where(w => w.Length > 2).ToList();
+
+        return books
+            .Select(b => new
+            {
+                Book  = b,
+                Score = keywords.Count(kw =>
+                    b.Title.ToLower().Contains(kw) ||
+                    b.Author.ToLower().Contains(kw) ||
+                    b.Tags.ToLower().Contains(kw) ||
+                    b.Description.ToLower().Contains(kw))
+            })
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .Select(x => x.Book)
+            .ToList();
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Книга дня (детерминированная по DayOfYear)
+    // ────────────────────────────────────────────────────────────
+
+    public Book? GetBookOfDay()
+    {
+        var books = _db.GetAllBooks();
+        if (books.Count == 0) return null;
+        return books[DateTime.UtcNow.DayOfYear % books.Count];
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Вспомогательное
+    // ────────────────────────────────────────────────────────────
+
+    public Book? GetBookById(long id) => _db.GetBookById(id);
+    public List<Book> GetAllBooks()   => _db.GetAllBooks();
+
+    private static string BuildHistoryContext(IEnumerable<(string Role, string Content)>? history)
+    {
+        if (history == null) return "";
+        var msgs = history.Where(h => h.Role == "user").TakeLast(5).Select(h => h.Content);
+        var joined = string.Join(" | ", msgs);
+        return string.IsNullOrEmpty(joined) ? "" : $"\nКонтекст: {joined}";
+    }
+
+    private static string FormatBookList(string header, IEnumerable<Book> books)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(header);
+        sb.AppendLine();
+        foreach (var book in books)
         {
             var isAudio = book.Type == "audio";
-            var icon = isAudio ? "🎧" : "📖";
-            var shortDesc = TruncateDesc(book.Description, 100);
-            var linkLabel = isAudio ? "Слушать" : "Читать";
-            sb.Append($"{icon} <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
-            if (!string.IsNullOrEmpty(shortDesc))
-                sb.Append($"\n{EscapeHtml(shortDesc)}");
+            sb.Append(isAudio ? "🎧" : "📖");
+            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
+            if (!string.IsNullOrEmpty(book.Description))
+                sb.Append($"\n{EscapeHtml(TruncateDesc(book.Description, 100))}");
             if (!string.IsNullOrEmpty(book.Url))
-                sb.Append($" <a href=\"{book.Url}\">→ {linkLabel}</a>");
+                sb.Append($" <a href=\"{book.Url}\">→ {(isAudio ? "Слушать" : "Читать")}</a>");
             sb.AppendLine("\n");
         }
         return sb.ToString().Trim();
+    }
+
+    internal static string FormatBookCard(Book book)
+    {
+        var isAudio = book.Type == "audio";
+        var icon = isAudio ? "🎧" : "📖";
+        var sb = new StringBuilder();
+        sb.AppendLine($"{icon} <b>«{EscapeHtml(book.Title)}»</b>");
+        if (!string.IsNullOrEmpty(book.Author))
+            sb.AppendLine($"👤 {EscapeHtml(book.Author)}");
+        if (!string.IsNullOrEmpty(book.Description))
+        {
+            sb.AppendLine();
+            sb.AppendLine(EscapeHtml(book.Description));
+        }
+        if (!string.IsNullOrEmpty(book.Tags))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"🏷️ {EscapeHtml(book.Tags)}");
+        }
+        return sb.ToString().Trim();
+    }
+
+    private static string ExtractField(string text, string field)
+    {
+        var match = Regex.Match(text, $@"{field}:\s*(.+?)(?:\n|$)", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value.Trim() : string.Empty;
     }
 
     private static string TruncateDesc(string text, int maxLen)
@@ -187,19 +372,15 @@ public class BookService
         return (cut > 0 ? text[..cut] : text[..maxLen]) + "...";
     }
 
-    private static string EscapeHtml(string text) =>
+    internal static string EscapeHtml(string text) =>
         text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     private static List<long> ParseIds(string raw)
     {
         var ids = new List<long>();
         foreach (var part in raw.Split(',', ' ', '\n', ';'))
-        {
             if (long.TryParse(part.Trim(), out var id))
                 ids.Add(id);
-        }
         return ids;
     }
-
-    public List<Book> GetAllBooks() => _db.GetAllBooks();
 }
