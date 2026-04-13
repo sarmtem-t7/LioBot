@@ -360,9 +360,14 @@ public class BookService
         return sb.ToString().Trim();
     }
 
-    // Полная аннотация — отдельный вызов AI на одну книгу по запросу пользователя
+    // Полная аннотация — с кэшированием в БД. Каждая книга запрашивается
+    // у AI максимум один раз; дальше — мгновенный возврат из базы.
     public async Task<string> AnnotateBookAsync(Book book)
     {
+        var cached = _db.GetCachedAnnotation(book.Id);
+        if (!string.IsNullOrWhiteSpace(cached))
+            return cached;
+
         var system = """
             Ты помощник христианского книжного клуба. Составь развёрнутую аннотацию книги — такую, чтобы человек понял:
             1. О чём книга (ключевые темы и идеи, 2-3 абзаца).
@@ -379,7 +384,16 @@ public class BookService
             """;
         try
         {
-            return await _claude.AskAsync(system, user, maxTokens: 700);
+            var aiText = await _claude.AskAsync(system, user, maxTokens: 700);
+            if (string.IsNullOrWhiteSpace(aiText))
+            {
+                _logger.LogWarning("[BookService] AI вернул пустой ответ для книги {Id}", book.Id);
+                return BuildFallbackAnnotation(book);
+            }
+            // Сохраняем на будущее — одна успешная генерация на книгу, дальше из БД.
+            try { _db.SaveCachedAnnotation(book.Id, aiText); }
+            catch (Exception cacheEx) { _logger.LogWarning(cacheEx, "[BookService] Не удалось сохранить кэш аннотации"); }
+            return aiText;
         }
         catch (Exception ex)
         {

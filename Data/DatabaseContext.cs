@@ -58,7 +58,8 @@ public partial class DatabaseContext
         {
             "ALTER TABLE Books ADD COLUMN Type TEXT NOT NULL DEFAULT 'book'",
             "ALTER TABLE Users ADD COLUMN NotifyMode TEXT NOT NULL DEFAULT 'daily'",
-            "ALTER TABLE Users ADD COLUMN OnboardingDone INTEGER NOT NULL DEFAULT 0"
+            "ALTER TABLE Users ADD COLUMN OnboardingDone INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE Books ADD COLUMN AiAnnotation TEXT NOT NULL DEFAULT ''"
         })
         {
             cmd.CommandText = migration;
@@ -357,6 +358,28 @@ public partial class DatabaseContext
         var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM Books";
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    public string? GetCachedAnnotation(long bookId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT AiAnnotation FROM Books WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$id", bookId);
+        var result = cmd.ExecuteScalar() as string;
+        return string.IsNullOrWhiteSpace(result) ? null : result;
+    }
+
+    public void SaveCachedAnnotation(long bookId, string annotation)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Books SET AiAnnotation = $a WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$a",  annotation);
+        cmd.Parameters.AddWithValue("$id", bookId);
+        cmd.ExecuteNonQuery();
     }
 
     public int GetCountByType(string type)
