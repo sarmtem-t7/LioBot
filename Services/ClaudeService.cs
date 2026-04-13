@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6,6 +7,8 @@ using Microsoft.Extensions.Logging;
 
 namespace LioBot.Services;
 
+// Groq (OpenAI-compatible) LLM client. Keeps the ClaudeService class name
+// to avoid churn in callers; provider is controlled by config.
 public class ClaudeService
 {
     private readonly HttpClient _http;
@@ -13,18 +16,18 @@ public class ClaudeService
     private readonly string _model;
     private readonly ILogger<ClaudeService> _logger;
 
-    private const string ApiUrl = "https://api.anthropic.com/v1/messages";
-    private const string DefaultModel = "claude-haiku-4-5";
-    private const string AnthropicVersion = "2023-06-01";
+    private const string ApiUrl = "https://api.groq.com/openai/v1/chat/completions";
+    private const string DefaultModel = "llama-3.3-70b-versatile";
 
     public ClaudeService(
         IConfiguration configuration,
         IHttpClientFactory httpClientFactory,
         ILogger<ClaudeService> logger)
     {
-        _apiKey = configuration["AnthropicApiKey"]
-            ?? throw new InvalidOperationException("AnthropicApiKey не задан в конфигурации.");
-        _model = configuration["AnthropicModel"] ?? DefaultModel;
+        _apiKey = configuration["GroqApiKey"]
+            ?? configuration["AnthropicApiKey"]
+            ?? throw new InvalidOperationException("GroqApiKey не задан в конфигурации.");
+        _model = configuration["GroqModel"] ?? DefaultModel;
         _http = httpClientFactory.CreateClient("anthropic");
         _logger = logger;
     }
@@ -40,7 +43,7 @@ public class ClaudeService
     {
         var fullSystem = "ВАЖНО: Отвечай ТОЛЬКО на русском языке. Не используй никакие другие языки, иероглифы или символы кроме русских, латинских букв, цифр и знаков препинания.\n\n" + systemPrompt;
 
-        var messages = new List<object>();
+        var messages = new List<object> { new { role = "system", content = fullSystem } };
 
         if (history != null)
         {
@@ -58,7 +61,6 @@ public class ClaudeService
         {
             model = _model,
             max_tokens = maxTokens,
-            system = fullSystem,
             temperature = 0.85,
             messages
         };
@@ -68,22 +70,22 @@ public class ClaudeService
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
-        request.Headers.Add("x-api-key", _apiKey);
-        request.Headers.Add("anthropic-version", AnthropicVersion);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
         using var response = await _http.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("[Claude] Ошибка {Status}: {Body}", response.StatusCode, responseBody);
-            throw new HttpRequestException($"Claude API error {(int)response.StatusCode}: {responseBody}");
+            _logger.LogError("[Groq] Ошибка {Status}: {Body}", response.StatusCode, responseBody);
+            throw new HttpRequestException($"Groq API error {(int)response.StatusCode}: {responseBody}");
         }
 
         using var doc = JsonDocument.Parse(responseBody);
         var text = doc.RootElement
-            .GetProperty("content")[0]
-            .GetProperty("text")
+            .GetProperty("choices")[0]
+            .GetProperty("message")
+            .GetProperty("content")
             .GetString() ?? string.Empty;
 
         return SanitizeText(text);
