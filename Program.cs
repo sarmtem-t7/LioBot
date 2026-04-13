@@ -23,7 +23,7 @@ builder.Services.AddHttpClient("anthropic");
 
 // --- Сервисы приложения ---
 builder.Services.AddSingleton<DatabaseContext>();
-builder.Services.AddSingleton<GroqService>();
+builder.Services.AddSingleton<ClaudeService>();
 builder.Services.AddSingleton<BookService>();
 builder.Services.AddSingleton<MessageHandler>();
 

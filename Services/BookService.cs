@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using LioBot.Data;
 using LioBot.Models;
@@ -10,20 +11,20 @@ namespace LioBot.Services;
 public class BookService
 {
     private readonly DatabaseContext _db;
-    private readonly GroqService _groq;
+    private readonly ClaudeService _claude;
     private readonly HttpClient _http;
     private readonly ILogger<BookService> _logger;
     private readonly string _allowedBookDomain;
 
     public BookService(
         DatabaseContext db,
-        GroqService groq,
+        ClaudeService claude,
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         ILogger<BookService> logger)
     {
         _db = db;
-        _groq = groq;
+        _claude = claude;
         _http = httpClientFactory.CreateClient();
         _logger = logger;
         _allowedBookDomain = configuration["AllowedBookDomain"] ?? "lio-int.com";
@@ -74,7 +75,7 @@ public class BookService
         string aiResponse;
         try
         {
-            aiResponse = await _groq.AskAsync(systemPrompt, $"Текст страницы:\n{text}", maxTokens: 400);
+            aiResponse = await _claude.AskAsync(systemPrompt, $"Текст страницы:\n{text}", maxTokens: 400);
         }
         catch (Exception ex)
         {
@@ -119,61 +120,70 @@ public class BookService
         if (allBooks.Count == 0)
             return new RecommendationResult("К сожалению, в библиотеке пока нет книг. Мы уже работаем над этим! 📚", []);
 
-        // Собираем ID книг, которые нужно исключить
         var excludeIds = new HashSet<long>();
+        var lowRated   = new HashSet<long>();
+        string prefsContext = "";
+
         if (telegramId > 0)
         {
             foreach (var id in _db.GetSeenBookIds(telegramId))    excludeIds.Add(id);
             foreach (var id in _db.GetIgnoredBookIds(telegramId)) excludeIds.Add(id);
+            foreach (var (bookId, rating) in _db.GetRatingsMap(telegramId))
+                if (rating <= 2) lowRated.Add(bookId);
+
+            var prefs = _db.GetPreferences(telegramId);
+            if (prefs != null)
+            {
+                var parts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(prefs.FaithStage))
+                    parts.Add($"стадия в вере: {prefs.FaithStage}");
+                if (!string.IsNullOrWhiteSpace(prefs.Interests))
+                    parts.Add($"интересы: {prefs.Interests}");
+                if (parts.Count > 0)
+                    prefsContext = "\nО пользователе: " + string.Join("; ", parts);
+            }
         }
 
         var historyContext = BuildHistoryContext(history);
-
-        // Шаг 1: поиск кандидатов по ключевым словам
-        var searchText = (userRequest + " " + historyContext).ToLowerInvariant();
-        var keywords = searchText
-            .Split(' ', ',', '.', '!', '?', '|')
-            .Where(w => w.Length > 3)
-            .ToList();
+        var stems = ExtractStems(userRequest + " " + historyContext);
 
         var candidates = allBooks
-            .Select(b => new
-            {
-                Book  = b,
-                Score = keywords.Count(kw =>
-                    b.Tags.ToLower().Contains(kw) ||
-                    b.Title.ToLower().Contains(kw) ||
-                    b.Description.ToLower().Contains(kw))
-            })
+            .Where(b => !excludeIds.Contains(b.Id))
+            .Select(b => new { Book = b, Score = ScoreBook(b, stems) })
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
-            .Take(20)
+            .Take(25)
             .Select(x => x.Book)
             .ToList();
 
         if (candidates.Count == 0)
-            candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(20).ToList();
+            candidates = allBooks.Where(b => !excludeIds.Contains(b.Id))
+                .OrderBy(_ => Guid.NewGuid()).Take(15).ToList();
 
-        // Исключаем виденные / скрытые (если остаётся достаточно)
-        var fresh = candidates.Where(b => !excludeIds.Contains(b.Id)).ToList();
-        if (fresh.Count >= 2) candidates = fresh;
+        if (candidates.Count == 0)
+            candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(10).ToList();
 
-        // Шаг 2: AI выбирает лучшие 2-3
         List<Book> selectedBooks;
         try
         {
             var catalog = string.Join("\n", candidates.Select(b =>
                 $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
-            var idsRaw = await _groq.AskAsync(
-                "Ты помощник книжного клуба. Выбери 2-3 книги из списка, подходящие к запросу. Учитывай контекст. Ответь ТОЛЬКО числами ID через запятую. Ничего лишнего.",
-                $"Список:\n{catalog}\n\nЗапрос: {userRequest}{historyContext}",
-                maxTokens: 20);
+            var avoidLine = lowRated.Count == 0 ? "" :
+                $"\nИзбегай книг, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
 
-            selectedBooks = ParseIds(idsRaw)
+            var systemMsg =
+                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2-3 целых чисел ID из списка (например: [12, 47, 3]). Никакого текста до или после.";
+
+            var userMsg = $"Список книг:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
+
+            var idsRaw = await _claude.AskAsync(systemMsg, userMsg, maxTokens: 60);
+
+            selectedBooks = ParseJsonIds(idsRaw)
                 .Select(id => candidates.FirstOrDefault(b => b.Id == id))
                 .Where(b => b != null)
                 .Cast<Book>()
+                .Take(3)
                 .ToList();
         }
         catch (Exception ex)
@@ -207,11 +217,10 @@ public class BookService
 
         var allBooks = _db.GetAllBooks().Where(b => !excludeIds.Contains(b.Id)).ToList();
 
-        var sourceTags = source.Tags.ToLower()
-            .Split(',', ' ').Where(t => t.Length > 2).ToHashSet();
+        var sourceStems = ExtractStems(source.Tags + " " + source.Title);
 
         var candidates = allBooks
-            .Select(b => new { Book = b, Score = sourceTags.Count(t => b.Tags.ToLower().Contains(t)) })
+            .Select(b => new { Book = b, Score = ScoreBook(b, sourceStems) })
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
             .Take(20)
@@ -221,7 +230,6 @@ public class BookService
         if (candidates.Count == 0)
             candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(5).ToList();
 
-        // Исключаем уже виденные (если остаётся достаточно)
         if (telegramId > 0)
         {
             var seenIds = _db.GetSeenBookIds(telegramId);
@@ -235,15 +243,16 @@ public class BookService
             var catalog = string.Join("\n", candidates.Select(b =>
                 $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
-            var idsRaw = await _groq.AskAsync(
-                "Ты помощник книжного клуба. Ответь ТОЛЬКО числами ID через запятую. Ничего лишнего.",
-                $"Список:\n{catalog}\n\nВыбери 2-3 книги, похожие на «{source.Title}» (теги: {source.Tags}). Только ID.",
-                maxTokens: 20);
+            var idsRaw = await _claude.AskAsync(
+                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2-3 целых чисел ID (например: [12, 47]). Без текста.",
+                $"Список:\n{catalog}\n\nВыбери 2-3 книги, похожие на «{source.Title}» (теги: {source.Tags}).",
+                maxTokens: 60);
 
-            selected = ParseIds(idsRaw)
+            selected = ParseJsonIds(idsRaw)
                 .Select(id => candidates.FirstOrDefault(b => b.Id == id))
                 .Where(b => b != null)
                 .Cast<Book>()
+                .Take(3)
                 .ToList();
         }
         catch (Exception ex)
@@ -272,19 +281,11 @@ public class BookService
         var books = _db.GetAllBooks();
         if (string.IsNullOrWhiteSpace(query)) return books.Take(5).ToList();
 
-        var keywords = query.ToLowerInvariant()
-            .Split(' ', ',', '.').Where(w => w.Length > 2).ToList();
+        var stems = ExtractStems(query);
+        if (stems.Count == 0) return new List<Book>();
 
         return books
-            .Select(b => new
-            {
-                Book  = b,
-                Score = keywords.Count(kw =>
-                    b.Title.ToLower().Contains(kw) ||
-                    b.Author.ToLower().Contains(kw) ||
-                    b.Tags.ToLower().Contains(kw) ||
-                    b.Description.ToLower().Contains(kw))
-            })
+            .Select(b => new { Book = b, Score = ScoreBook(b, stems) })
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
             .Select(x => x.Book)
@@ -317,7 +318,7 @@ public class BookService
         return string.IsNullOrEmpty(joined) ? "" : $"\nКонтекст: {joined}";
     }
 
-    private static string FormatBookList(string header, IEnumerable<Book> books)
+    internal static string FormatBookList(string header, IEnumerable<Book> books)
     {
         var sb = new StringBuilder();
         sb.AppendLine(header);
@@ -375,12 +376,80 @@ public class BookService
     internal static string EscapeHtml(string text) =>
         text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
-    private static List<long> ParseIds(string raw)
+    // ────────────────────────────────────────────────────────────
+    // Лёгкий русский стемминг: обрезаем окончания
+    // ────────────────────────────────────────────────────────────
+
+    private static readonly string[] StopWords =
+    {
+        "что", "как", "про", "для", "меня", "тебя", "себя", "когда", "почему",
+        "если", "чтобы", "книг", "книга", "книги", "это", "эта", "этот",
+        "хочу", "нужно", "надо", "очень", "просто", "помоги", "тему", "тема"
+    };
+
+    private static readonly string[] Endings =
+    {
+        "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
+        "ая", "яя", "ое", "ее", "ую", "юю", "ой", "ый", "ий", "ей", "ый",
+        "ах", "ях", "ом", "ем", "ов", "ев", "ам", "ям",
+        "ть", "ся",
+        "а", "я", "о", "е", "у", "ю", "ы", "и", "ь"
+    };
+
+    private static string Stem(string word)
+    {
+        word = word.ToLowerInvariant();
+        foreach (var e in Endings)
+            if (word.Length > e.Length + 2 && word.EndsWith(e))
+                return word[..^e.Length];
+        return word;
+    }
+
+    internal static HashSet<string> ExtractStems(string text)
+    {
+        var stems = new HashSet<string>();
+        foreach (var raw in Regex.Split(text.ToLowerInvariant(), @"[^\p{L}]+"))
+        {
+            if (raw.Length < 3) continue;
+            if (StopWords.Contains(raw)) continue;
+            var s = Stem(raw);
+            if (s.Length >= 3) stems.Add(s);
+        }
+        return stems;
+    }
+
+    private static int ScoreBook(Book b, HashSet<string> stems)
+    {
+        if (stems.Count == 0) return 0;
+        var haystack = (b.Tags + " " + b.Title + " " + b.Description).ToLowerInvariant();
+        var score = 0;
+        foreach (var s in stems)
+            if (haystack.Contains(s)) score++;
+        return score;
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Парсинг JSON-ответа Claude
+    // ────────────────────────────────────────────────────────────
+
+    internal static List<long> ParseJsonIds(string raw)
     {
         var ids = new List<long>();
-        foreach (var part in raw.Split(',', ' ', '\n', ';'))
-            if (long.TryParse(part.Trim(), out var id))
-                ids.Add(id);
+        var match = Regex.Match(raw, @"\[([^\]]*)\]");
+        if (match.Success)
+        {
+            try
+            {
+                var arr = JsonDocument.Parse("[" + match.Groups[1].Value + "]");
+                foreach (var el in arr.RootElement.EnumerateArray())
+                    if (el.TryGetInt64(out var v)) ids.Add(v);
+                if (ids.Count > 0) return ids;
+            }
+            catch { /* fallback below */ }
+        }
+
+        foreach (Match m in Regex.Matches(raw, @"\d+"))
+            if (long.TryParse(m.Value, out var v)) ids.Add(v);
         return ids;
     }
 }

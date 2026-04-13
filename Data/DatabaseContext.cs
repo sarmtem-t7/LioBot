@@ -4,7 +4,7 @@ using LioBot.Models;
 
 namespace LioBot.Data;
 
-public class DatabaseContext
+public partial class DatabaseContext
 {
     private readonly string _connectionString;
 
@@ -57,7 +57,8 @@ public class DatabaseContext
         foreach (var migration in new[]
         {
             "ALTER TABLE Books ADD COLUMN Type TEXT NOT NULL DEFAULT 'book'",
-            "ALTER TABLE Users ADD COLUMN NotifyMode TEXT NOT NULL DEFAULT 'daily'"
+            "ALTER TABLE Users ADD COLUMN NotifyMode TEXT NOT NULL DEFAULT 'daily'",
+            "ALTER TABLE Users ADD COLUMN OnboardingDone INTEGER NOT NULL DEFAULT 0"
         })
         {
             cmd.CommandText = migration;
@@ -106,6 +107,63 @@ public class DatabaseContext
                 BookId     INTEGER NOT NULL,
                 MarkedAt   TEXT NOT NULL,
                 PRIMARY KEY (TelegramId, BookId)
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // User onboarding preferences
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS UserPreferences (
+                TelegramId INTEGER PRIMARY KEY,
+                FaithStage TEXT NOT NULL DEFAULT '',
+                Interests  TEXT NOT NULL DEFAULT '',
+                UpdatedAt  TEXT NOT NULL
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Book ratings (1..5)
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS BookRatings (
+                TelegramId INTEGER NOT NULL,
+                BookId     INTEGER NOT NULL,
+                Rating     INTEGER NOT NULL,
+                CreatedAt  TEXT NOT NULL,
+                PRIMARY KEY (TelegramId, BookId)
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Currently reading
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS ReadingNow (
+                TelegramId      INTEGER NOT NULL,
+                BookId          INTEGER NOT NULL,
+                StartedAt       TEXT NOT NULL,
+                LastRemindedAt  TEXT,
+                PRIMARY KEY (TelegramId, BookId)
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // FSM state for text input after button press
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS UserState (
+                TelegramId     INTEGER PRIMARY KEY,
+                PendingAction  TEXT NOT NULL,
+                PendingContext TEXT NOT NULL DEFAULT '',
+                UpdatedAt      TEXT NOT NULL
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Verses already sent to a user (avoid repeats)
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS SentVerses (
+                TelegramId INTEGER NOT NULL,
+                VerseRef   TEXT NOT NULL,
+                SentAt     TEXT NOT NULL,
+                PRIMARY KEY (TelegramId, VerseRef)
             );
             """;
         cmd.ExecuteNonQuery();
@@ -168,7 +226,7 @@ public class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, TelegramId, Username, FirstName, RegisteredAt, NotifyMode FROM Users WHERE TelegramId = $tid";
+        cmd.CommandText = "SELECT Id, TelegramId, Username, FirstName, RegisteredAt, NotifyMode, OnboardingDone FROM Users WHERE TelegramId = $tid";
         cmd.Parameters.AddWithValue("$tid", telegramId);
         using var reader = cmd.ExecuteReader();
         if (!reader.Read()) return null;
@@ -210,11 +268,21 @@ public class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, TelegramId, Username, FirstName, RegisteredAt, NotifyMode FROM Users";
+        cmd.CommandText = "SELECT Id, TelegramId, Username, FirstName, RegisteredAt, NotifyMode, OnboardingDone FROM Users";
         using var reader = cmd.ExecuteReader();
         var list = new List<User>();
         while (reader.Read()) list.Add(MapUser(reader));
         return list;
+    }
+
+    public void MarkOnboardingDone(long telegramId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Users SET OnboardingDone = 1 WHERE TelegramId = $tid";
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.ExecuteNonQuery();
     }
 
     // --- Books ---
@@ -419,12 +487,13 @@ public class DatabaseContext
 
     private static User MapUser(SqliteDataReader r) => new()
     {
-        Id           = r.GetInt64(0),
-        TelegramId   = r.GetInt64(1),
-        Username     = r.IsDBNull(2) ? null : r.GetString(2),
-        FirstName    = r.GetString(3),
-        RegisteredAt = DateTime.Parse(r.GetString(4)),
-        NotifyMode   = r.IsDBNull(5) ? "daily" : r.GetString(5)
+        Id             = r.GetInt64(0),
+        TelegramId     = r.GetInt64(1),
+        Username       = r.IsDBNull(2) ? null : r.GetString(2),
+        FirstName      = r.GetString(3),
+        RegisteredAt   = DateTime.Parse(r.GetString(4)),
+        NotifyMode     = r.IsDBNull(5) ? "daily" : r.GetString(5),
+        OnboardingDone = r.FieldCount > 6 && !r.IsDBNull(6) && r.GetInt64(6) == 1
     };
 
     private static Book MapBook(SqliteDataReader r) => new()

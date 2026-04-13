@@ -8,4 +8,5 @@ public class User
     public string FirstName { get; set; } = string.Empty;
     public DateTime RegisteredAt { get; set; } = DateTime.UtcNow;
     public string NotifyMode { get; set; } = "daily"; // daily | weekly | off
+    public bool OnboardingDone { get; set; } = false;
 }

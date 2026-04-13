@@ -16,7 +16,7 @@ public class MessageHandler
 {
     private readonly DatabaseContext _db;
     private readonly BookService _bookService;
-    private readonly GroqService _groq;
+    private readonly ClaudeService _claude;
     private readonly ILogger<MessageHandler> _logger;
     private readonly HashSet<long> _adminIds;
 
@@ -33,16 +33,40 @@ public class MessageHandler
         ("⛪ История церкви",    "история церкви"),
     };
 
+    // Этапы веры для онбординга
+    private static readonly (string Id, string Label, string Hint)[] FaithStages =
+    {
+        ("seeker",  "🌱 Ищу Бога",        "только знакомлюсь с верой"),
+        ("new",     "✨ Недавно уверовал", "первые шаги в вере"),
+        ("growing", "📖 Расту в вере",     "уже какое-то время с Богом"),
+        ("mature",  "⛪ Давно в вере",     "зрелый христианин"),
+    };
+
+    // Интересы для онбординга (мульти-выбор)
+    private static readonly (string Tag, string Label)[] OnboardingInterests =
+    {
+        ("молитва",        "🙏 Молитва"),
+        ("семья",          "👨‍👩‍👧 Семья"),
+        ("трудности",      "💪 Трудности"),
+        ("библия",         "📖 Библия"),
+        ("духовный рост",  "🌱 Духовный рост"),
+        ("история церкви", "⛪ История церкви"),
+        ("отношения",      "❤️ Отношения"),
+        ("призвание",      "🎯 Призвание"),
+        ("евангелизм",     "📣 Евангелизм"),
+        ("прощение",       "🕊️ Прощение"),
+    };
+
     public MessageHandler(
         DatabaseContext db,
         BookService bookService,
-        GroqService groq,
+        ClaudeService claude,
         IConfiguration configuration,
         ILogger<MessageHandler> logger)
     {
         _db = db;
         _bookService = bookService;
-        _groq = groq;
+        _claude = claude;
         _logger = logger;
 
         _adminIds = (configuration["AdminIds"] ?? "")
@@ -95,8 +119,34 @@ public class MessageHandler
 
             if (text.StartsWith("/start"))
             {
-                reply = BuildWelcomeMessage(telegramUser.FirstName);
-                keyboard = MainMenuKeyboard();
+                var existing = _db.GetUserByTelegramId(telegramUser.Id);
+                if (existing is null || !existing.OnboardingDone)
+                {
+                    reply = BuildOnboardingStageMessage(telegramUser.FirstName);
+                    keyboard = OnboardingStageKeyboard();
+                }
+                else
+                {
+                    reply = BuildWelcomeMessage(telegramUser.FirstName);
+                    keyboard = MainMenuKeyboard();
+                }
+            }
+            else if (text.StartsWith("/onboarding"))
+            {
+                reply = BuildOnboardingStageMessage(telegramUser.FirstName);
+                keyboard = OnboardingStageKeyboard();
+            }
+            else if (text.StartsWith("/stats"))
+            {
+                if (_adminIds.Count == 0 || _adminIds.Contains(telegramUser.Id))
+                {
+                    reply = BuildStatsMessage();
+                    keyboard = MainMenuKeyboard();
+                }
+                else
+                {
+                    reply = "Эта команда доступна только администраторам.";
+                }
             }
             else if (text.StartsWith("/help"))
             {
@@ -217,17 +267,85 @@ public class MessageHandler
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.EditMessageText(chatId, messageId, BookService.FormatBookCard(book),
                     parseMode: ParseMode.Html,
-                    replyMarkup: BookCardKeyboard(book),
+                    replyMarkup: BookCardKeyboard(book, user.Id),
                     linkPreviewOptions: new() { IsDisabled = true },
                     cancellationToken: ct);
                 return;
             }
 
-            // ── Отметить прочитанным ───────────────────────────────────
+            // ── Отметить прочитанным + предложить оценку ──────────────
             if (data.StartsWith("book:read:") && long.TryParse(data[10..], out var readId))
             {
                 _db.MarkBookAsRead(user.Id, readId);
+                _db.StopReading(user.Id, readId);
                 await bot.AnswerCallbackQuery(query.Id, "✅ Добавлено в список прочитанных!", cancellationToken: ct);
+
+                var existingRating = _db.GetRating(user.Id, readId);
+                if (existingRating is null)
+                {
+                    var book = _bookService.GetBookById(readId);
+                    var title = book != null ? BookService.EscapeHtml(book.Title) : "книгу";
+                    await bot.SendMessage(chatId,
+                        $"⭐ Оцени «{title}» — это поможет подбирать книги точнее:",
+                        parseMode: ParseMode.Html,
+                        replyMarkup: RatingKeyboard(readId),
+                        cancellationToken: ct);
+                }
+                return;
+            }
+
+            // ── Оценка книги (1..5 или пропуск) ───────────────────────
+            if (data.StartsWith("book:rate:"))
+            {
+                var tail = data[10..].Split(':');
+                if (tail.Length == 2 && long.TryParse(tail[0], out var rateBookId))
+                {
+                    if (tail[1] == "skip")
+                    {
+                        await bot.AnswerCallbackQuery(query.Id, "Пропущено", cancellationToken: ct);
+                        try
+                        {
+                            await bot.EditMessageText(chatId, messageId,
+                                "⭐ Хорошо, без оценки.",
+                                parseMode: ParseMode.Html,
+                                cancellationToken: ct);
+                        }
+                        catch { /* сообщение могло устареть */ }
+                        return;
+                    }
+                    if (int.TryParse(tail[1], out var rating) && rating is >= 1 and <= 5)
+                    {
+                        _db.SetRating(user.Id, rateBookId, rating);
+                        var stars = new string('⭐', rating);
+                        await bot.AnswerCallbackQuery(query.Id, $"Спасибо! {stars}", cancellationToken: ct);
+                        try
+                        {
+                            await bot.EditMessageText(chatId, messageId,
+                                $"⭐ Твоя оценка: {stars}\nСпасибо — теперь подборка станет точнее.",
+                                parseMode: ParseMode.Html,
+                                cancellationToken: ct);
+                        }
+                        catch { /* сообщение могло устареть */ }
+                        return;
+                    }
+                }
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                return;
+            }
+
+            // ── Начал читать ──────────────────────────────────────────
+            if (data.StartsWith("book:reading:") && long.TryParse(data[13..], out var readingId))
+            {
+                _db.MarkBookAsReading(user.Id, readingId);
+                await bot.AnswerCallbackQuery(query.Id, "📖 Добавлено в «Сейчас читаю»", cancellationToken: ct);
+                return;
+            }
+
+            // ── Отложить книгу ────────────────────────────────────────
+            if (data.StartsWith("book:stopreading:") && long.TryParse(data[17..], out var stopId))
+            {
+                _db.StopReading(user.Id, stopId);
+                await bot.AnswerCallbackQuery(query.Id, "⏸ Отложена", cancellationToken: ct);
                 return;
             }
 
@@ -237,6 +355,52 @@ public class MessageHandler
                 _db.MarkBookAsIgnored(user.Id, ignoreId);
                 _db.MarkBooksAsSeen(user.Id, [ignoreId]);
                 await bot.AnswerCallbackQuery(query.Id, "❌ Книга скрыта из рекомендаций", cancellationToken: ct);
+                return;
+            }
+
+            // ── Онбординг: выбор этапа веры ───────────────────────────
+            if (data.StartsWith("onb:stage:"))
+            {
+                var stage = data[10..];
+                if (FaithStages.Any(s => s.Id == stage))
+                {
+                    _db.SetFaithStage(user.Id, stage);
+                    await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    await bot.EditMessageText(chatId, messageId,
+                        BuildOnboardingInterestsMessage(),
+                        parseMode: ParseMode.Html,
+                        replyMarkup: OnboardingInterestsKeyboard(user.Id),
+                        cancellationToken: ct);
+                    return;
+                }
+            }
+
+            // ── Онбординг: переключение интереса ──────────────────────
+            if (data.StartsWith("onb:interest:"))
+            {
+                var tag = data[13..];
+                _db.ToggleInterest(user.Id, tag);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                try
+                {
+                    await bot.EditMessageReplyMarkup(chatId, messageId,
+                        OnboardingInterestsKeyboard(user.Id), cancellationToken: ct);
+                }
+                catch { /* без изменений — игнорируем */ }
+                return;
+            }
+
+            // ── Онбординг: завершение или пропуск ─────────────────────
+            if (data == "onb:done" || data == "onb:skip")
+            {
+                _db.MarkOnboardingDone(user.Id);
+                await bot.AnswerCallbackQuery(query.Id,
+                    data == "onb:skip" ? "Пропущено" : "Готово!", cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    BuildOnboardingDoneMessage(user.FirstName, user.Id),
+                    parseMode: ParseMode.Html,
+                    replyMarkup: MainMenuKeyboard(),
+                    cancellationToken: ct);
                 return;
             }
 
@@ -354,7 +518,7 @@ public class MessageHandler
                     var dayBook = _bookService.GetBookOfDay();
                     if (dayBook == null) { reply = "Каталог пока пуст 📚"; break; }
                     reply    = $"🎲 <b>Книга дня:</b>\n\n{BookService.FormatBookCard(dayBook)}";
-                    keyboard = BookCardKeyboard(dayBook);
+                    keyboard = BookCardKeyboard(dayBook, user.Id);
                     break;
 
                 case "recommend:more":
@@ -541,16 +705,25 @@ public class MessageHandler
         return new InlineKeyboardMarkup(rows);
     }
 
-    private static InlineKeyboardMarkup BookCardKeyboard(Book book)
+    private InlineKeyboardMarkup BookCardKeyboard(Book book, long telegramId = 0)
     {
+        var reading = telegramId > 0 && _db.GetReadingNow(telegramId).Any(b => b.Id == book.Id);
+        var readingBtn = reading
+            ? InlineKeyboardButton.WithCallbackData("⏸ Отложить",  $"book:stopreading:{book.Id}")
+            : InlineKeyboardButton.WithCallbackData("📖 Читаю",     $"book:reading:{book.Id}");
+
         var rows = new List<InlineKeyboardButton[]>
         {
             new[]
             {
                 InlineKeyboardButton.WithCallbackData("✅ Прочитал",   $"book:read:{book.Id}"),
-                InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
+                readingBtn
             },
-            new[] { InlineKeyboardButton.WithCallbackData("🔍 Похожие книги", $"book:similar:{book.Id}") }
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("🔍 Похожие",    $"book:similar:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
+            }
         };
         if (!string.IsNullOrEmpty(book.Url))
         {
@@ -561,6 +734,50 @@ public class MessageHandler
             InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0"),
             HomeButton()
         ]);
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    private static InlineKeyboardMarkup RatingKeyboard(long bookId)
+    {
+        var stars = new InlineKeyboardButton[5];
+        for (var i = 1; i <= 5; i++)
+            stars[i - 1] = InlineKeyboardButton.WithCallbackData(i.ToString(), $"book:rate:{bookId}:{i}");
+        return new InlineKeyboardMarkup(new[]
+        {
+            stars,
+            new[] { InlineKeyboardButton.WithCallbackData("Пропустить", $"book:rate:{bookId}:skip") }
+        });
+    }
+
+    private static InlineKeyboardMarkup OnboardingStageKeyboard()
+    {
+        var rows = FaithStages
+            .Select(s => new[] { InlineKeyboardButton.WithCallbackData(s.Label, $"onb:stage:{s.Id}") })
+            .ToList();
+        rows.Add([InlineKeyboardButton.WithCallbackData("⏭ Пропустить", "onb:skip")]);
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    private InlineKeyboardMarkup OnboardingInterestsKeyboard(long telegramId)
+    {
+        var prefs    = _db.GetPreferences(telegramId);
+        var selected = (prefs?.Interests ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var rows = OnboardingInterests
+            .Chunk(2)
+            .Select(pair => pair
+                .Select(t =>
+                {
+                    var on    = selected.Contains(t.Tag);
+                    var label = on ? $"{t.Label} ✓" : t.Label;
+                    return InlineKeyboardButton.WithCallbackData(label, $"onb:interest:{t.Tag}");
+                })
+                .ToArray())
+            .ToList();
+        rows.Add([InlineKeyboardButton.WithCallbackData("✅ Готово", "onb:done")]);
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -689,11 +906,11 @@ public class MessageHandler
             """;
         try
         {
-            return await _groq.AskWithHistoryAsync(system, userText, history, maxTokens: 512);
+            return await _claude.AskWithHistoryAsync(system, userText, history, maxTokens: 512);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Bot] Groq недоступен при свободном диалоге");
+            _logger.LogWarning(ex, "[Bot] Claude недоступен при свободном диалоге");
             return "Сейчас сервис временно недоступен. Попробуй позже или спроси про книги 📚";
         }
     }
@@ -713,8 +930,10 @@ public class MessageHandler
         • <b>По теме</b> — быстрый выбор: молитва, семья, трудности…
         • <b>Каталог</b> — все книги и аудио с фильтрами
         • <b>Книга дня</b> — одна книга каждый день
-        • <b>Мои книги</b> — список прочитанного
+        • <b>Мои книги</b> — что читаю сейчас и что уже прочитал (с оценками)
         • <b>Рассылка</b> — утреннее вдохновение: ежедневно, раз в неделю или выключить
+        • В карточке книги: «📖 Читаю» / «✅ Прочитал» / «⭐ Оценить»
+        • <code>/onboarding</code> — перенастроить этап веры и интересы
         • <code>/search молитва</code> — прямой поиск по слову
         • <code>/addbook URL</code> — добавить книгу (администраторы)
         • @LioBot <i>запрос</i> — поиск прямо из любого чата (inline)
@@ -722,16 +941,41 @@ public class MessageHandler
 
     private string BuildMyBooksMessage(long telegramId)
     {
-        var books = _db.GetReadBooks(telegramId);
-        if (books.Count == 0)
-            return "У тебя пока нет прочитанных книг.\n\nЧтобы добавить — нажми ✅ под рекомендацией или в карточке книги.";
+        var reading = _db.GetReadingNow(telegramId);
+        var read    = _db.GetReadBooks(telegramId);
+        var ratings = _db.GetRatingsMap(telegramId);
 
-        var list = string.Join("\n", books.Select((b, i) =>
+        if (reading.Count == 0 && read.Count == 0)
+            return "У тебя пока нет книг в списке.\n\nВ карточке книги нажми «📖 Читаю» чтобы начать, или «✅ Прочитал» когда закончишь.";
+
+        var sb = new System.Text.StringBuilder();
+
+        if (reading.Count > 0)
         {
-            var icon = b.Type == "audio" ? "🎧" : "📖";
-            return $"{i + 1}. {icon} «{b.Title}» — {b.Author}";
-        }));
-        return $"📖 <b>Прочитанные книги ({books.Count}):</b>\n\n{list}";
+            sb.AppendLine($"📖 <b>Сейчас читаю ({reading.Count}):</b>");
+            sb.AppendLine();
+            foreach (var b in reading)
+            {
+                var icon = b.Type == "audio" ? "🎧" : "📖";
+                sb.AppendLine($"{icon} «{BookService.EscapeHtml(b.Title)}» — {BookService.EscapeHtml(b.Author)}");
+            }
+            if (read.Count > 0) sb.AppendLine();
+        }
+
+        if (read.Count > 0)
+        {
+            sb.AppendLine($"✅ <b>Прочитано ({read.Count}):</b>");
+            sb.AppendLine();
+            for (var i = 0; i < read.Count; i++)
+            {
+                var b     = read[i];
+                var icon  = b.Type == "audio" ? "🎧" : "📖";
+                var stars = ratings.TryGetValue(b.Id, out var r) ? " " + new string('⭐', r) : "";
+                sb.AppendLine($"{i + 1}. {icon} «{BookService.EscapeHtml(b.Title)}» — {BookService.EscapeHtml(b.Author)}{stars}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     private string BuildNotifySettingsMessage(long telegramId)
@@ -744,5 +988,89 @@ public class MessageHandler
             _        => "🔕 Выключена"
         };
         return $"⚙️ <b>Настройки утренней рассылки</b>\n\nСейчас: <b>{current}</b>\n\nВыбери режим:";
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Онбординг
+    // ════════════════════════════════════════════════════════════
+
+    private static string BuildOnboardingStageMessage(string firstName) => $"""
+        Привет, {firstName}! 👋
+
+        Я Лио — бот книжного клуба «Лио». Прежде чем начать, расскажи немного о себе — подберу книги точнее.
+
+        <b>На каком этапе твой путь веры?</b>
+        """;
+
+    private static string BuildOnboardingInterestsMessage() => """
+        Отлично! 🙏
+
+        <b>Что тебе сейчас интересно?</b>
+        Отметь одну или несколько тем (можно выбрать несколько), потом нажми «Готово».
+        """;
+
+    private string BuildOnboardingDoneMessage(string firstName, long telegramId)
+    {
+        var prefs = _db.GetPreferences(telegramId);
+        var stage = FaithStages.FirstOrDefault(s => s.Id == (prefs?.FaithStage ?? "")).Label ?? "—";
+        var interests = string.IsNullOrWhiteSpace(prefs?.Interests) ? "не выбраны" : prefs!.Interests;
+
+        return $"""
+            Готово, {firstName}! ✨
+
+            <b>Этап:</b> {stage}
+            <b>Интересы:</b> {BookService.EscapeHtml(interests)}
+
+            Теперь напиши, что тебя сейчас занимает, — подберу книгу. Или воспользуйся меню.
+            """;
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Статистика (админ)
+    // ════════════════════════════════════════════════════════════
+
+    private string BuildStatsMessage()
+    {
+        var users     = _db.GetUsersCount();
+        var active7d  = _db.GetActiveUsersCount(TimeSpan.FromDays(7));
+        var ratings   = _db.GetRatingsCount();
+        var booksAll  = _db.GetBooksCount();
+        var booksText = _db.GetCountByType("book");
+        var booksAud  = _db.GetCountByType("audio");
+
+        var topRated  = _db.GetTopRatedBooks(5, minVotes: 3);
+        var topShown  = _db.GetTopRecommendedBooks(5);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("📊 <b>Статистика</b>");
+        sb.AppendLine();
+        sb.AppendLine($"👥 Пользователей: <b>{users}</b>");
+        sb.AppendLine($"📈 Активных за 7 дней: <b>{active7d}</b>");
+        sb.AppendLine($"⭐ Оценок: <b>{ratings}</b>");
+        sb.AppendLine($"📚 Каталог: <b>{booksAll}</b> (книг: {booksText}, аудио: {booksAud})");
+
+        if (topRated.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("⭐ <b>Топ по оценкам</b> (мин. 3 голосов):");
+            for (var i = 0; i < topRated.Count; i++)
+            {
+                var (t, avg, v) = topRated[i];
+                sb.AppendLine($"{i + 1}. {avg:F1} — «{BookService.EscapeHtml(t)}» ({v})");
+            }
+        }
+
+        if (topShown.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("🔥 <b>Чаще всего рекомендовали:</b>");
+            for (var i = 0; i < topShown.Count; i++)
+            {
+                var (t, c) = topShown[i];
+                sb.AppendLine($"{i + 1}. «{BookService.EscapeHtml(t)}» ({c})");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
     }
 }
