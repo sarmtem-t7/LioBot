@@ -66,30 +66,63 @@ public class ClaudeService
         };
 
         var json = JsonSerializer.Serialize(body);
-        using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
-        {
-            Content = new StringContent(json, Encoding.UTF8, "application/json")
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-        using var response = await _http.SendAsync(request);
-        var responseBody = await response.Content.ReadAsStringAsync();
+        // Ретраим транзиентные сбои: сетевые ошибки, таймауты, 429, 5xx.
+        const int maxAttempts = 4;
+        Exception? lastError = null;
 
-        if (!response.IsSuccessStatusCode)
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            _logger.LogError("[Groq] Ошибка {Status}: {Body}", response.StatusCode, responseBody);
-            throw new HttpRequestException($"Groq API error {(int)response.StatusCode}: {responseBody}");
+            using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var response = await _http.SendAsync(request, cts.Token);
+                var responseBody = await response.Content.ReadAsStringAsync(cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(responseBody);
+                    var text = doc.RootElement
+                        .GetProperty("choices")[0]
+                        .GetProperty("message")
+                        .GetProperty("content")
+                        .GetString() ?? string.Empty;
+                    return SanitizeText(text);
+                }
+
+                var status = (int)response.StatusCode;
+                var transient = status == 429 || status >= 500;
+                _logger.LogWarning("[Groq] {Status} (попытка {Attempt}/{Max}): {Body}",
+                    status, attempt, maxAttempts, Truncate(responseBody, 300));
+
+                if (!transient || attempt == maxAttempts)
+                    throw new HttpRequestException($"Groq API error {status}: {responseBody}");
+
+                lastError = new HttpRequestException($"Groq API error {status}");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+            {
+                lastError = ex;
+                _logger.LogWarning(ex, "[Groq] Сетевой сбой (попытка {Attempt}/{Max})", attempt, maxAttempts);
+                if (attempt == maxAttempts) throw;
+            }
+
+            // Экспоненциальный бэкофф с джиттером: ~0.7s, 1.5s, 3s
+            var delayMs = (int)(700 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 300));
+            await Task.Delay(delayMs);
         }
 
-        using var doc = JsonDocument.Parse(responseBody);
-        var text = doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? string.Empty;
-
-        return SanitizeText(text);
+        throw lastError ?? new HttpRequestException("Groq API: unknown failure");
     }
+
+    private static string Truncate(string s, int n) =>
+        string.IsNullOrEmpty(s) || s.Length <= n ? s : s[..n] + "…";
 
     private static string SanitizeText(string text)
     {

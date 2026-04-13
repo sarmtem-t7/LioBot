@@ -202,6 +202,14 @@ public class BookService
         if (selectedBooks.Count == 0)
             selectedBooks = candidates.Take(2).ToList();
 
+        // Подстрахуем пустые комментарии коротким описанием из каталога,
+        // чтобы карточка книги никогда не была без пояснения.
+        foreach (var b in selectedBooks)
+        {
+            if (!comments.TryGetValue(b.Id, out var c) || string.IsNullOrWhiteSpace(c))
+                comments[b.Id] = TruncateDesc(b.Description ?? "", 180);
+        }
+
         if (telegramId > 0)
             _db.MarkBooksAsSeen(telegramId, selectedBooks.Select(b => b.Id));
 
@@ -369,7 +377,30 @@ public class BookService
             Теги: {book.Tags}
             Короткое описание из каталога: {book.Description}
             """;
-        return await _claude.AskAsync(system, user, maxTokens: 700);
+        try
+        {
+            return await _claude.AskAsync(system, user, maxTokens: 700);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[BookService] AI недоступен для аннотации, fallback на описание из каталога");
+            return BuildFallbackAnnotation(book);
+        }
+    }
+
+    private static string BuildFallbackAnnotation(Book book)
+    {
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(book.Description))
+            sb.AppendLine(book.Description.Trim());
+        if (!string.IsNullOrWhiteSpace(book.Tags))
+        {
+            if (sb.Length > 0) sb.AppendLine();
+            sb.Append("Темы: ").Append(book.Tags.Trim()).Append('.');
+        }
+        if (sb.Length == 0)
+            sb.Append("Развёрнутая аннотация сейчас недоступна, но книга точно достойна внимания.");
+        return sb.ToString().Trim();
     }
 
     internal static string FormatBookList(string header, IEnumerable<Book> books)
