@@ -838,10 +838,6 @@ public class MessageHandler
             },
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("📝 Полная аннотация", $"book:annotate:{book.Id}")
-            },
-            new[]
-            {
                 InlineKeyboardButton.WithCallbackData("🔍 Похожие",    $"book:similar:{book.Id}"),
                 InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
             }

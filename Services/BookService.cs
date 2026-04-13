@@ -174,7 +174,7 @@ public class BookService
                 $"\nИзбегай книг, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
 
             var systemMsg = """
-                Ты помощник христианского книжного клуба. Выбери 2-3 книги из списка, подходящие к запросу пользователя.
+                Ты помощник христианского книжного клуба. Выбери 2 книги из списка, подходящие к запросу пользователя.
                 Ответ — ТОЛЬКО JSON-массив объектов строго такого формата:
                 [{"id": 12, "comment": "короткий комментарий почему эта книга подходит"},
                  {"id": 47, "comment": "..."}]
@@ -189,7 +189,7 @@ public class BookService
             selectedBooks = parsed
                 .Select(p => (Book: candidates.FirstOrDefault(b => b.Id == p.Id), p.Comment))
                 .Where(x => x.Book != null)
-                .Take(3)
+                .Take(2)
                 .Select(x => { comments[x.Book!.Id] = x.Comment; return x.Book!; })
                 .ToList();
         }
@@ -253,15 +253,15 @@ public class BookService
                 $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
             var idsRaw = await _claude.AskAsync(
-                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2-3 целых чисел ID (например: [12, 47]). Без текста.",
-                $"Список:\n{catalog}\n\nВыбери 2-3 книги, похожие на «{source.Title}» (теги: {source.Tags}).",
+                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2 целых чисел ID (например: [12, 47]). Без текста.",
+                $"Список:\n{catalog}\n\nВыбери 2 книги, похожие на «{source.Title}» (теги: {source.Tags}).",
                 maxTokens: 60);
 
             selected = ParseJsonIds(idsRaw)
                 .Select(id => candidates.FirstOrDefault(b => b.Id == id))
                 .Where(b => b != null)
                 .Cast<Book>()
-                .Take(3)
+                .Take(2)
                 .ToList();
         }
         catch (Exception ex)
