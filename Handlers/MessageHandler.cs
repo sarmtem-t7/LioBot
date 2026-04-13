@@ -358,6 +358,86 @@ public class MessageHandler
                 return;
             }
 
+            // ── Профиль: просмотр ─────────────────────────────────────
+            if (data == "profile:view")
+            {
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    BuildProfileMessage(user.Id),
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileKeyboard(),
+                    cancellationToken: ct);
+                return;
+            }
+
+            // ── Профиль: сменить этап ─────────────────────────────────
+            if (data == "profile:editstage")
+            {
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    "Выбери этап веры:",
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileStageKeyboard(),
+                    cancellationToken: ct);
+                return;
+            }
+
+            // ── Профиль: сохранить этап → обратно к профилю ───────────
+            if (data.StartsWith("profile:setstage:"))
+            {
+                var stage = data[17..];
+                if (FaithStages.Any(s => s.Id == stage))
+                {
+                    _db.SetFaithStage(user.Id, stage);
+                    await bot.AnswerCallbackQuery(query.Id, "Сохранено", cancellationToken: ct);
+                    await bot.EditMessageText(chatId, messageId,
+                        BuildProfileMessage(user.Id),
+                        parseMode: ParseMode.Html,
+                        replyMarkup: ProfileKeyboard(),
+                        cancellationToken: ct);
+                    return;
+                }
+            }
+
+            // ── Профиль: редактировать интересы ───────────────────────
+            if (data == "profile:editinterests")
+            {
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    "Отметь свои интересы (можно несколько), потом нажми «Готово»:",
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileInterestsKeyboard(user.Id),
+                    cancellationToken: ct);
+                return;
+            }
+
+            // ── Профиль: тоггл интереса ───────────────────────────────
+            if (data.StartsWith("profile:toggle:"))
+            {
+                var tag = data[15..];
+                _db.ToggleInterest(user.Id, tag);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                try
+                {
+                    await bot.EditMessageReplyMarkup(chatId, messageId,
+                        ProfileInterestsKeyboard(user.Id), cancellationToken: ct);
+                }
+                catch { /* без изменений */ }
+                return;
+            }
+
+            // ── Профиль: сохранить интересы → обратно к профилю ───────
+            if (data == "profile:save")
+            {
+                await bot.AnswerCallbackQuery(query.Id, "Сохранено", cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    BuildProfileMessage(user.Id),
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileKeyboard(),
+                    cancellationToken: ct);
+                return;
+            }
+
             // ── Онбординг: выбор этапа веры ───────────────────────────
             if (data.StartsWith("onb:stage:"))
             {
@@ -401,6 +481,34 @@ public class MessageHandler
                     parseMode: ParseMode.Html,
                     replyMarkup: MainMenuKeyboard(),
                     cancellationToken: ct);
+                return;
+            }
+
+            // ── Полная аннотация книги (AI) ───────────────────────────
+            if (data.StartsWith("book:annotate:") && long.TryParse(data[14..], out var annotateId))
+            {
+                var book = _bookService.GetBookById(annotateId);
+                if (book == null)
+                {
+                    await bot.AnswerCallbackQuery(query.Id, "Книга не найдена", cancellationToken: ct);
+                    return;
+                }
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+                try
+                {
+                    var annotation = await _bookService.AnnotateBookAsync(book);
+                    var icon = book.Type == "audio" ? "🎧" : "📖";
+                    var text = $"{icon} <b>«{BookService.EscapeHtml(book.Title)}»</b> — {BookService.EscapeHtml(book.Author)}\n\n{BookService.EscapeHtml(annotation)}";
+                    await SendMessage(bot, chatId, text, BookCardKeyboard(book, user.Id), ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Bot] Не удалось получить аннотацию");
+                    await bot.SendMessage(chatId,
+                        "Не смог получить подробную аннотацию сейчас. Попробуй позже 🙏",
+                        cancellationToken: ct);
+                }
                 return;
             }
 
@@ -512,6 +620,11 @@ public class MessageHandler
                 case "menu:notifications":
                     reply    = BuildNotifySettingsMessage(user.Id);
                     keyboard = NotifySettingsKeyboard(user.Id);
+                    break;
+
+                case "menu:profile":
+                    reply    = BuildProfileMessage(user.Id);
+                    keyboard = ProfileKeyboard();
                     break;
 
                 case "book:random":
@@ -682,7 +795,8 @@ public class MessageHandler
                 InlineKeyboardButton.WithCallbackData("🎲 Книга дня",       "book:random") },
         new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",        "menu:topics"),
                 InlineKeyboardButton.WithCallbackData("📖 Мои книги",       "menu:mybooks") },
-        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Рассылка",        "menu:notifications") }
+        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль",         "menu:profile"),
+                InlineKeyboardButton.WithCallbackData("🔔 Рассылка",        "menu:notifications") }
     });
 
     private static InlineKeyboardMarkup RecommendationKeyboard(List<Book> books)
@@ -692,6 +806,9 @@ public class MessageHandler
         {
             var book = books[i];
             var n    = i + 1;
+            rows.Add([
+                InlineKeyboardButton.WithCallbackData($"📝 Подробнее о кн.{n}", $"book:annotate:{book.Id}")
+            ]);
             rows.Add([
                 InlineKeyboardButton.WithCallbackData($"✅ Прочитал кн.{n}",  $"book:read:{book.Id}"),
                 InlineKeyboardButton.WithCallbackData($"❌ Скрыть кн.{n}",    $"book:ignore:{book.Id}")
@@ -721,6 +838,10 @@ public class MessageHandler
             },
             new[]
             {
+                InlineKeyboardButton.WithCallbackData("📝 Полная аннотация", $"book:annotate:{book.Id}")
+            },
+            new[]
+            {
                 InlineKeyboardButton.WithCallbackData("🔍 Похожие",    $"book:similar:{book.Id}"),
                 InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
             }
@@ -747,6 +868,45 @@ public class MessageHandler
             stars,
             new[] { InlineKeyboardButton.WithCallbackData("Пропустить", $"book:rate:{bookId}:skip") }
         });
+    }
+
+    private static InlineKeyboardMarkup ProfileKeyboard() => new(new[]
+    {
+        new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить этап",      "profile:editstage") },
+        new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить интересы",  "profile:editinterests") },
+        new[] { HomeButton() }
+    });
+
+    private static InlineKeyboardMarkup ProfileStageKeyboard()
+    {
+        var rows = FaithStages
+            .Select(s => new[] { InlineKeyboardButton.WithCallbackData(s.Label, $"profile:setstage:{s.Id}") })
+            .ToList();
+        rows.Add([InlineKeyboardButton.WithCallbackData("← Назад к профилю", "profile:view")]);
+        return new InlineKeyboardMarkup(rows);
+    }
+
+    private InlineKeyboardMarkup ProfileInterestsKeyboard(long telegramId)
+    {
+        var prefs    = _db.GetPreferences(telegramId);
+        var selected = (prefs?.Interests ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var rows = OnboardingInterests
+            .Chunk(2)
+            .Select(pair => pair
+                .Select(t =>
+                {
+                    var on    = selected.Contains(t.Tag);
+                    var label = on ? $"{t.Label} ✓" : t.Label;
+                    return InlineKeyboardButton.WithCallbackData(label, $"profile:toggle:{t.Tag}");
+                })
+                .ToArray())
+            .ToList();
+        rows.Add([InlineKeyboardButton.WithCallbackData("✅ Готово", "profile:save")]);
+        return new InlineKeyboardMarkup(rows);
     }
 
     private static InlineKeyboardMarkup OnboardingStageKeyboard()
@@ -932,8 +1092,8 @@ public class MessageHandler
         • <b>Книга дня</b> — одна книга каждый день
         • <b>Мои книги</b> — что читаю сейчас и что уже прочитал (с оценками)
         • <b>Рассылка</b> — утреннее вдохновение: ежедневно, раз в неделю или выключить
-        • В карточке книги: «📖 Читаю» / «✅ Прочитал» / «⭐ Оценить»
-        • <code>/onboarding</code> — перенастроить этап веры и интересы
+        • В карточке книги: «📝 Полная аннотация» / «📖 Читаю» / «✅ Прочитал» / «⭐ Оценить»
+        • <b>Профиль</b> — сменить этап веры или интересы в любой момент
         • <code>/search молитва</code> — прямой поиск по слову
         • <code>/addbook URL</code> — добавить книгу (администраторы)
         • @LioBot <i>запрос</i> — поиск прямо из любого чата (inline)
@@ -988,6 +1148,29 @@ public class MessageHandler
             _        => "🔕 Выключена"
         };
         return $"⚙️ <b>Настройки утренней рассылки</b>\n\nСейчас: <b>{current}</b>\n\nВыбери режим:";
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Профиль
+    // ════════════════════════════════════════════════════════════
+
+    private string BuildProfileMessage(long telegramId)
+    {
+        var prefs = _db.GetPreferences(telegramId);
+        var stage = FaithStages.FirstOrDefault(s => s.Id == (prefs?.FaithStage ?? "")).Label ?? "<i>не выбран</i>";
+
+        var interests = string.IsNullOrWhiteSpace(prefs?.Interests)
+            ? "<i>не выбраны</i>"
+            : BookService.EscapeHtml(prefs!.Interests);
+
+        return $"""
+            ⚙️ <b>Твой профиль</b>
+
+            <b>Этап веры:</b> {stage}
+            <b>Интересы:</b> {interests}
+
+            Эти данные помогают подбирать книги точнее. Можешь изменить в любой момент.
+            """;
     }
 
     // ════════════════════════════════════════════════════════════

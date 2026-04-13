@@ -164,26 +164,33 @@ public class BookService
             candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(10).ToList();
 
         List<Book> selectedBooks;
+        Dictionary<long, string> comments = new();
         try
         {
             var catalog = string.Join("\n", candidates.Select(b =>
-                $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
+                $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags} | {TruncateDesc(b.Description, 120)}"));
 
             var avoidLine = lowRated.Count == 0 ? "" :
                 $"\nИзбегай книг, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
 
-            var systemMsg =
-                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2-3 целых чисел ID из списка (например: [12, 47, 3]). Никакого текста до или после.";
+            var systemMsg = """
+                Ты помощник христианского книжного клуба. Выбери 2-3 книги из списка, подходящие к запросу пользователя.
+                Ответ — ТОЛЬКО JSON-массив объектов строго такого формата:
+                [{"id": 12, "comment": "короткий комментарий почему эта книга подходит"},
+                 {"id": 47, "comment": "..."}]
+                Комментарий — 1-2 предложения, тёплый тон, без воды. Никакого текста вне JSON.
+                """;
 
             var userMsg = $"Список книг:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
 
-            var idsRaw = await _claude.AskAsync(systemMsg, userMsg, maxTokens: 60);
+            var raw = await _claude.AskAsync(systemMsg, userMsg, maxTokens: 500);
+            var parsed = ParseRecommendations(raw);
 
-            selectedBooks = ParseJsonIds(idsRaw)
-                .Select(id => candidates.FirstOrDefault(b => b.Id == id))
-                .Where(b => b != null)
-                .Cast<Book>()
+            selectedBooks = parsed
+                .Select(p => (Book: candidates.FirstOrDefault(b => b.Id == p.Id), p.Comment))
+                .Where(x => x.Book != null)
                 .Take(3)
+                .Select(x => { comments[x.Book!.Id] = x.Comment; return x.Book!; })
                 .ToList();
         }
         catch (Exception ex)
@@ -198,7 +205,9 @@ public class BookService
         if (telegramId > 0)
             _db.MarkBooksAsSeen(telegramId, selectedBooks.Select(b => b.Id));
 
-        return new RecommendationResult(FormatBookList("📚 Вот что нашёл:", selectedBooks), selectedBooks);
+        return new RecommendationResult(
+            FormatRecommendation("📚 Вот что нашёл:", selectedBooks, comments),
+            selectedBooks);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -316,6 +325,51 @@ public class BookService
         var msgs = history.Where(h => h.Role == "user").TakeLast(5).Select(h => h.Content);
         var joined = string.Join(" | ", msgs);
         return string.IsNullOrEmpty(joined) ? "" : $"\nКонтекст: {joined}";
+    }
+
+    // Форматирование с AI-комментариями к каждой книге (для рекомендаций)
+    internal static string FormatRecommendation(
+        string header, IEnumerable<Book> books, Dictionary<long, string> comments)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(header);
+        sb.AppendLine();
+        foreach (var book in books)
+        {
+            var isAudio = book.Type == "audio";
+            sb.Append(isAudio ? "🎧" : "📖");
+            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
+            sb.AppendLine();
+            if (comments.TryGetValue(book.Id, out var comment) && !string.IsNullOrWhiteSpace(comment))
+            {
+                sb.Append($"<i>{EscapeHtml(comment)}</i>");
+                sb.AppendLine();
+            }
+            if (!string.IsNullOrEmpty(book.Url))
+                sb.Append($"<a href=\"{book.Url}\">→ {(isAudio ? "Слушать" : "Читать")}</a>");
+            sb.AppendLine("\n");
+        }
+        return sb.ToString().Trim();
+    }
+
+    // Полная аннотация — отдельный вызов AI на одну книгу по запросу пользователя
+    public async Task<string> AnnotateBookAsync(Book book)
+    {
+        var system = """
+            Ты помощник христианского книжного клуба. Составь развёрнутую аннотацию книги — такую, чтобы человек понял:
+            1. О чём книга (ключевые темы и идеи, 2-3 абзаца).
+            2. Кому она подойдёт (на каком этапе веры, в каких жизненных ситуациях).
+            3. Чем она ценна (почему стоит прочесть).
+            Тон — тёплый, как у друга в вере. Язык — русский. Без маркетингового пафоса.
+            Максимум 7-8 предложений всего, без заголовков. Не повторяй название в начале.
+            """;
+        var user = $"""
+            Название: «{book.Title}»
+            Автор: {book.Author}
+            Теги: {book.Tags}
+            Короткое описание из каталога: {book.Description}
+            """;
+        return await _claude.AskAsync(system, user, maxTokens: 700);
     }
 
     internal static string FormatBookList(string header, IEnumerable<Book> books)
@@ -451,5 +505,27 @@ public class BookService
         foreach (Match m in Regex.Matches(raw, @"\d+"))
             if (long.TryParse(m.Value, out var v)) ids.Add(v);
         return ids;
+    }
+
+    // Парсит [{"id": N, "comment": "..."}]
+    internal static List<(long Id, string Comment)> ParseRecommendations(string raw)
+    {
+        var list = new List<(long, string)>();
+        var match = Regex.Match(raw ?? "", @"\[[\s\S]*\]");
+        if (!match.Success) return list;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(match.Value);
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (!el.TryGetProperty("id", out var idEl) || !idEl.TryGetInt64(out var id)) continue;
+                var comment = el.TryGetProperty("comment", out var cEl) ? (cEl.GetString() ?? "") : "";
+                list.Add((id, comment.Trim()));
+            }
+        }
+        catch { /* невалидный JSON — вернём пустой список, вызывающий код возьмёт кандидатов */ }
+
+        return list;
     }
 }
