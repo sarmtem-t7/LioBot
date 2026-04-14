@@ -59,12 +59,64 @@ public partial class DatabaseContext
             "ALTER TABLE Books ADD COLUMN Type TEXT NOT NULL DEFAULT 'book'",
             "ALTER TABLE Users ADD COLUMN NotifyMode TEXT NOT NULL DEFAULT 'daily'",
             "ALTER TABLE Users ADD COLUMN OnboardingDone INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE Books ADD COLUMN AiAnnotation TEXT NOT NULL DEFAULT ''"
+            "ALTER TABLE Books ADD COLUMN AiAnnotation TEXT NOT NULL DEFAULT ''",
+            // Унифицированный контент: audio, журналы, дата публикации
+            "ALTER TABLE Books ADD COLUMN AudioUrl TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE Books ADD COLUMN IssueId INTEGER",
+            "ALTER TABLE Books ADD COLUMN ReleasedAt TEXT"
         })
         {
             cmd.CommandText = migration;
             try { cmd.ExecuteNonQuery(); } catch { /* already exists */ }
         }
+
+        // Authors + связь M:N с материалами
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS Authors (
+                Id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS ContentAuthors (
+                ContentId INTEGER NOT NULL,
+                AuthorId  INTEGER NOT NULL,
+                PRIMARY KEY (ContentId, AuthorId)
+            );
+            CREATE INDEX IF NOT EXISTS idx_content_authors_author ON ContentAuthors(AuthorId);
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Журналы и их выпуски
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS Magazines (
+                Id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                Slug  TEXT NOT NULL UNIQUE,
+                Title TEXT NOT NULL,
+                Url   TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS MagazineIssues (
+                Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                MagazineId INTEGER NOT NULL,
+                Title      TEXT NOT NULL,
+                Url        TEXT NOT NULL DEFAULT '',
+                AudioUrl   TEXT NOT NULL DEFAULT '',
+                CoverUrl   TEXT NOT NULL DEFAULT '',
+                ReleasedAt TEXT,
+                FOREIGN KEY (MagazineId) REFERENCES Magazines(Id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_issues_magazine ON MagazineIssues(MagazineId);
+            """;
+        cmd.ExecuteNonQuery();
+
+        // Избранное (отдельно от статусов «читаю/прочитано/отложено»)
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS Favorites (
+                TelegramId INTEGER NOT NULL,
+                ContentId  INTEGER NOT NULL,
+                AddedAt    TEXT NOT NULL,
+                PRIMARY KEY (TelegramId, ContentId)
+            );
+            """;
+        cmd.ExecuteNonQuery();
 
         // History
         cmd.CommandText = """
@@ -293,7 +345,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type FROM Books WHERE Id = $id";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books WHERE Id = $id";
         cmd.Parameters.AddWithValue("$id", id);
         using var reader = cmd.ExecuteReader();
         if (!reader.Read()) return null;
@@ -305,7 +357,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type FROM Books";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books";
         using var reader = cmd.ExecuteReader();
         var list = new List<Book>();
         while (reader.Read()) list.Add(MapBook(reader));
@@ -466,7 +518,7 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt
             FROM Books b
             INNER JOIN ReadBooks r ON r.BookId = b.Id
             WHERE r.TelegramId = $tid
@@ -506,6 +558,61 @@ public partial class DatabaseContext
         return ids;
     }
 
+    // --- Favorites ---
+
+    public void AddFavorite(long telegramId, long contentId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO Favorites (TelegramId, ContentId, AddedAt) VALUES ($tid, $cid, $ts)";
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.Parameters.AddWithValue("$cid", contentId);
+        cmd.Parameters.AddWithValue("$ts",  DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
+    }
+
+    public void RemoveFavorite(long telegramId, long contentId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM Favorites WHERE TelegramId = $tid AND ContentId = $cid";
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.Parameters.AddWithValue("$cid", contentId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool IsFavorite(long telegramId, long contentId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM Favorites WHERE TelegramId = $tid AND ContentId = $cid";
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.Parameters.AddWithValue("$cid", contentId);
+        return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+    }
+
+    public List<Book> GetFavorites(long telegramId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt
+            FROM Books b
+            INNER JOIN Favorites f ON f.ContentId = b.Id
+            WHERE f.TelegramId = $tid
+            ORDER BY f.AddedAt DESC
+            """;
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        using var reader = cmd.ExecuteReader();
+        var list = new List<Book>();
+        while (reader.Read()) list.Add(MapBook(reader));
+        return list;
+    }
+
     // --- Mappers ---
 
     private static User MapUser(SqliteDataReader r) => new()
@@ -527,6 +634,9 @@ public partial class DatabaseContext
         Description = r.GetString(3),
         Tags        = r.GetString(4),
         Url         = r.IsDBNull(5) ? string.Empty : r.GetString(5),
-        Type        = r.IsDBNull(6) ? "book" : r.GetString(6)
+        Type        = r.IsDBNull(6) ? "book" : r.GetString(6),
+        AudioUrl    = r.FieldCount > 7 && !r.IsDBNull(7) ? r.GetString(7) : string.Empty,
+        IssueId     = r.FieldCount > 8 && !r.IsDBNull(8) ? r.GetInt64(8) : null,
+        ReleasedAt  = r.FieldCount > 9 && !r.IsDBNull(9) ? DateTime.Parse(r.GetString(9)) : null
     };
 }

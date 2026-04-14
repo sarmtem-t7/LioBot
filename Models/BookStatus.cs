@@ -1,5 +1,9 @@
 namespace LioBot.Models;
 
+// Нейтральные статусы, подходят любому контенту (книга/статья/журнал/радио):
+// Reading  = «в процессе»   (InProgress)
+// Read     = «завершено»    (Finished)
+// Dropped  = «отложено»     (Postponed)
 public enum BookProgress
 {
     Reading,

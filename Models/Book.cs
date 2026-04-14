@@ -8,5 +8,9 @@ public class Book
     public string Description { get; set; } = string.Empty;
     public string Tags { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
-    public string Type { get; set; } = "book"; // "book" or "audio"
+    // book | audio | article | magazine | radio
+    public string Type { get; set; } = "book";
+    public string AudioUrl { get; set; } = string.Empty;
+    public long? IssueId { get; set; }
+    public DateTime? ReleasedAt { get; set; }
 }
