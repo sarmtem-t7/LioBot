@@ -723,16 +723,19 @@ public class MessageHandler
     private (string Text, InlineKeyboardMarkup Keyboard) BuildCatalogPage(int page, string typeFilter)
     {
         var all = _bookService.GetAllBooks();
-        var filtered = typeFilter switch
-        {
-            "book"  => all.Where(b => b.Type == "book").ToList(),
-            "audio" => all.Where(b => b.Type == "audio").ToList(),
-            _       => all
-        };
+        var filtered = typeFilter == "all" ? all : all.Where(b => b.Type == typeFilter).ToList();
 
+        var emptyLabels = new Dictionary<string, string>
+        {
+            ["book"]     = "книг",
+            ["audio"]    = "аудиокниг",
+            ["article"]  = "статей",
+            ["magazine"] = "журналов",
+            ["radio"]    = "радио-станций"
+        };
         if (filtered.Count == 0)
         {
-            var empty = typeFilter == "audio" ? "аудиокниг" : "книг";
+            var empty = emptyLabels.TryGetValue(typeFilter, out var e) ? e : "материалов";
             return ($"В каталоге пока нет {empty}. 📚", MainMenuKeyboard());
         }
 
@@ -742,40 +745,50 @@ public class MessageHandler
 
         var filterLabel = typeFilter switch
         {
-            "book"  => "📖 Книги",
-            "audio" => "🎧 Аудиокниги",
-            _       => "📚 Все"
+            "book"     => "📖 Книги",
+            "audio"    => "🎧 Аудиокниги",
+            "article"  => "📰 Статьи",
+            "magazine" => "📖 Журналы",
+            "radio"    => "🎙 Радио",
+            _          => "📚 Все материалы"
         };
         var text = $"{filterLabel} (стр. {page + 1}/{totalPages}) — нажми для подробностей:";
 
         var buttons = new List<InlineKeyboardButton[]>();
 
-        // Каждая книга — кнопка
         foreach (var b in pageBooks)
         {
-            var icon  = b.Type == "audio" ? "🎧" : "📖";
-            var label = $"{icon} {b.Title}";
+            var label = $"{BookService.IconFor(b.Type)} {b.Title}";
             if (label.Length > 48) label = label[..48] + "…";
             buttons.Add([InlineKeyboardButton.WithCallbackData(label, $"book:card:{b.Id}")]);
         }
 
-        // Навигация + фильтры
+        // Навигация по страницам
         var navRow = new List<InlineKeyboardButton>();
         if (page > 0)
             navRow.Add(InlineKeyboardButton.WithCallbackData("←", $"catalog:{typeFilter}:{page - 1}"));
-
         navRow.Add(InlineKeyboardButton.WithCallbackData(
-            typeFilter == "all" ? "📚 Все ✓" : "📚 Все",    "catalog:all:0"));
-        navRow.Add(InlineKeyboardButton.WithCallbackData(
-            typeFilter == "book"  ? "📖 ✓" : "📖",           "catalog:book:0"));
-        navRow.Add(InlineKeyboardButton.WithCallbackData(
-            typeFilter == "audio" ? "🎧 ✓" : "🎧",           "catalog:audio:0"));
-
+            $"стр. {page + 1}/{totalPages}", $"catalog:{typeFilter}:{page}"));
         if (page < totalPages - 1)
             navRow.Add(InlineKeyboardButton.WithCallbackData("→", $"catalog:{typeFilter}:{page + 1}"));
-
         buttons.Add(navRow.ToArray());
-        buttons.Add([InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend")]);
+
+        // Переключатели типа — два ряда по 3
+        string Mark(string t, string label) => typeFilter == t ? label + " ✓" : label;
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(Mark("all",   "📚 Все"),     "catalog:all:0"),
+            InlineKeyboardButton.WithCallbackData(Mark("book",  "📖 Книги"),   "catalog:book:0"),
+            InlineKeyboardButton.WithCallbackData(Mark("audio", "🎧 Аудио"),   "catalog:audio:0")
+        });
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData(Mark("article",  "📰 Статьи"),  "catalog:article:0"),
+            InlineKeyboardButton.WithCallbackData(Mark("magazine", "📖 Журналы"), "catalog:magazine:0"),
+            InlineKeyboardButton.WithCallbackData(Mark("radio",    "🎙 Радио"),   "catalog:radio:0")
+        });
+
+        buttons.Add([InlineKeyboardButton.WithCallbackData("🤖 Подбери мне", "menu:recommend")]);
         buttons.Add([HomeButton()]);
 
         return (text, new InlineKeyboardMarkup(buttons));
@@ -790,13 +803,23 @@ public class MessageHandler
 
     private static InlineKeyboardMarkup MainMenuKeyboard() => new(new[]
     {
-        new[] { InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend") },
-        new[] { InlineKeyboardButton.WithCallbackData("📋 Каталог",         "menu:catalog"),
-                InlineKeyboardButton.WithCallbackData("🎲 Книга дня",       "book:random") },
-        new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",        "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("📖 Мои книги",       "menu:mybooks") },
-        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль",         "menu:profile"),
-                InlineKeyboardButton.WithCallbackData("🔔 Рассылка",        "menu:notifications") }
+        new[] { InlineKeyboardButton.WithCallbackData("🤖 Подбери материал", "menu:recommend") },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData("📖 Книги",  "catalog:book:0"),
+            InlineKeyboardButton.WithCallbackData("🎧 Аудио",  "catalog:audio:0"),
+            InlineKeyboardButton.WithCallbackData("📰 Статьи", "catalog:article:0")
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData("🎙 Радио",   "catalog:radio:0"),
+            InlineKeyboardButton.WithCallbackData("📖 Журналы", "catalog:magazine:0"),
+            InlineKeyboardButton.WithCallbackData("🎲 Случайное","book:random")
+        },
+        new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",     "menu:topics"),
+                InlineKeyboardButton.WithCallbackData("📌 Мои материалы","menu:mybooks") },
+        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль",      "menu:profile"),
+                InlineKeyboardButton.WithCallbackData("🔔 Рассылка",     "menu:notifications") }
     });
 
     private static InlineKeyboardMarkup RecommendationKeyboard(List<Book> books)

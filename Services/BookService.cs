@@ -326,6 +326,29 @@ public class BookService
 
     public Book? GetBookById(long id) => _db.GetBookById(id);
     public List<Book> GetAllBooks()   => _db.GetAllBooks();
+    public List<Book> GetByType(string type, int? limit = null, int offset = 0) =>
+        _db.GetByType(type, limit, offset);
+
+    // ────────────────────────────────────────────────────────────
+    // Иконки и подписи действий по типу контента
+    // ────────────────────────────────────────────────────────────
+    internal static string IconFor(string type) => type switch
+    {
+        "audio"    => "🎧",
+        "article"  => "📰",
+        "magazine" => "📖",
+        "radio"    => "🎙",
+        _          => "📚"
+    };
+
+    internal static string LinkLabelFor(string type) => type switch
+    {
+        "audio"    => "Слушать",
+        "article"  => "Читать",
+        "magazine" => "Открыть",
+        "radio"    => "Слушать стрим",
+        _          => "Читать"
+    };
 
     private static string BuildHistoryContext(IEnumerable<(string Role, string Content)>? history)
     {
@@ -344,9 +367,10 @@ public class BookService
         sb.AppendLine();
         foreach (var book in books)
         {
-            var isAudio = book.Type == "audio";
-            sb.Append(isAudio ? "🎧" : "📖");
-            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
+            sb.Append(IconFor(book.Type));
+            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b>");
+            if (!string.IsNullOrWhiteSpace(book.Author))
+                sb.Append($" — {EscapeHtml(book.Author)}");
             sb.AppendLine();
             if (comments.TryGetValue(book.Id, out var comment) && !string.IsNullOrWhiteSpace(comment))
             {
@@ -354,7 +378,7 @@ public class BookService
                 sb.AppendLine();
             }
             if (!string.IsNullOrEmpty(book.Url))
-                sb.Append($"<a href=\"{book.Url}\">→ {(isAudio ? "Слушать" : "Читать")}</a>");
+                sb.Append($"<a href=\"{book.Url}\">→ {LinkLabelFor(book.Type)}</a>");
             sb.AppendLine("\n");
         }
         return sb.ToString().Trim();
@@ -424,13 +448,14 @@ public class BookService
         sb.AppendLine();
         foreach (var book in books)
         {
-            var isAudio = book.Type == "audio";
-            sb.Append(isAudio ? "🎧" : "📖");
-            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b> — {EscapeHtml(book.Author)}");
+            sb.Append(IconFor(book.Type));
+            sb.Append($" <b>«{EscapeHtml(book.Title)}»</b>");
+            if (!string.IsNullOrWhiteSpace(book.Author))
+                sb.Append($" — {EscapeHtml(book.Author)}");
             if (!string.IsNullOrEmpty(book.Description))
                 sb.Append($"\n{EscapeHtml(TruncateDesc(book.Description, 100))}");
             if (!string.IsNullOrEmpty(book.Url))
-                sb.Append($" <a href=\"{book.Url}\">→ {(isAudio ? "Слушать" : "Читать")}</a>");
+                sb.Append($" <a href=\"{book.Url}\">→ {LinkLabelFor(book.Type)}</a>");
             sb.AppendLine("\n");
         }
         return sb.ToString().Trim();
@@ -438,10 +463,8 @@ public class BookService
 
     internal static string FormatBookCard(Book book)
     {
-        var isAudio = book.Type == "audio";
-        var icon = isAudio ? "🎧" : "📖";
         var sb = new StringBuilder();
-        sb.AppendLine($"{icon} <b>«{EscapeHtml(book.Title)}»</b>");
+        sb.AppendLine($"{IconFor(book.Type)} <b>«{EscapeHtml(book.Title)}»</b>");
         if (!string.IsNullOrEmpty(book.Author))
             sb.AppendLine($"👤 {EscapeHtml(book.Author)}");
         if (!string.IsNullOrEmpty(book.Description))

@@ -444,6 +444,21 @@ public partial class DatabaseContext
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
+    public List<Book> GetByType(string type, int? limit = null, int offset = 0)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books WHERE Type = $type ORDER BY Id DESC";
+        if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$type", type);
+        using var reader = cmd.ExecuteReader();
+        var list = new List<Book>();
+        while (reader.Read()) list.Add(MapBook(reader));
+        return list;
+    }
+
     // --- SeenBooks ---
 
     public HashSet<long> GetSeenBookIds(long telegramId)

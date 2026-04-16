@@ -17,6 +17,7 @@ import sys
 import re
 import sqlite3
 import json
+import time
 import html as html_lib
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
@@ -215,6 +216,31 @@ def import_magazines(conn) -> int:
     return added
 
 
+# ───────────────────────────── Дотеги пустых записей ─────────────────────────────
+def retag_empty(conn, type_filter: Optional[str] = None) -> int:
+    """Заполняет AI-теги для записей с пустым Tags. Throttle 2.5с между запросами."""
+    where = "Tags = ''"
+    params: tuple = ()
+    if type_filter:
+        where += " AND Type = ?"
+        params = (type_filter,)
+    cur = conn.execute(f"SELECT Id, Title, Description FROM Books WHERE {where}", params)
+    rows = cur.fetchall()
+    print(f"[retag] {len(rows)} записей без тегов")
+    updated = 0
+    for i, (book_id, title, description) in enumerate(rows, 1):
+        tags = ai_tags(title, description or "")
+        if tags:
+            conn.execute("UPDATE Books SET Tags = ? WHERE Id = ?", (tags, book_id))
+            conn.commit()
+            updated += 1
+            print(f"  [{i}/{len(rows)}] #{book_id} → {tags[:60]}")
+        else:
+            print(f"  [{i}/{len(rows)}] #{book_id} → (пусто)")
+        time.sleep(2.5)  # 24 req/min, под лимитом Groq free tier (30/min)
+    return updated
+
+
 # ───────────────────────────── main ─────────────────────────────
 def main():
     if len(sys.argv) < 2:
@@ -235,6 +261,9 @@ def main():
             print(f"→ добавлено радио: {import_radio(conn)}")
         if target in ("magazines", "all"):
             print(f"→ добавлено изданий: {import_magazines(conn)}")
+        if target == "retag":
+            type_filter = sys.argv[2] if len(sys.argv) > 2 else None
+            print(f"→ дотегано: {retag_empty(conn, type_filter)}")
     finally:
         conn.close()
 
