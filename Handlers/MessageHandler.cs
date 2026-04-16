@@ -667,22 +667,57 @@ public class MessageHandler
     // Inline Query
     // ════════════════════════════════════════════════════════════
 
+    // Префиксы фильтра по типу: "статьи:семья", "радио:", "книги:молитва"
+    private static readonly Dictionary<string, string> InlineTypePrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["книги"]    = "book",
+        ["аудио"]    = "audio",
+        ["статьи"]   = "article",
+        ["журналы"]  = "magazine",
+        ["радио"]    = "radio"
+    };
+
     private async Task HandleInlineQueryAsync(ITelegramBotClient bot, InlineQuery query, CancellationToken ct)
     {
         var searchText = query.Query.Trim();
-        var books = string.IsNullOrEmpty(searchText)
-            ? _bookService.GetAllBooks().OrderBy(_ => Guid.NewGuid()).Take(5).ToList()
-            : _bookService.SearchBooks(searchText).Take(5).ToList();
 
-        var results = books.Select(book =>
+        // Парсим необязательный префикс типа
+        string? typeFilter = null;
+        var colon = searchText.IndexOf(':');
+        if (colon > 0)
         {
-            var isAudio  = book.Type == "audio";
-            var icon     = isAudio ? "🎧" : "📖";
+            var prefix = searchText[..colon].Trim();
+            if (InlineTypePrefixes.TryGetValue(prefix, out var t))
+            {
+                typeFilter = t;
+                searchText = searchText[(colon + 1)..].Trim();
+            }
+        }
+
+        List<Book> items;
+        if (string.IsNullOrEmpty(searchText))
+        {
+            items = (typeFilter == null ? _bookService.GetAllBooks() : _bookService.GetByType(typeFilter))
+                .OrderBy(_ => Guid.NewGuid()).Take(8).ToList();
+        }
+        else
+        {
+            items = _bookService.SearchBooks(searchText);
+            if (typeFilter != null) items = items.Where(b => b.Type == typeFilter).ToList();
+            items = items.Take(8).ToList();
+        }
+
+        var results = items.Select(book =>
+        {
+            var icon     = BookService.IconFor(book.Type);
+            var authorPart = string.IsNullOrWhiteSpace(book.Author)
+                ? ""
+                : $" — {BookService.EscapeHtml(book.Author)}";
             var linkPart = string.IsNullOrEmpty(book.Url)
                 ? ""
-                : $"\n\n<a href=\"{book.Url}\">→ {(isAudio ? "Слушать" : "Читать")}</a>";
+                : $"\n\n<a href=\"{book.Url}\">→ {BookService.LinkLabelFor(book.Type)}</a>";
             var msgText  =
-                $"{icon} <b>«{BookService.EscapeHtml(book.Title)}»</b> — {BookService.EscapeHtml(book.Author)}\n\n" +
+                $"{icon} <b>«{BookService.EscapeHtml(book.Title)}»</b>{authorPart}\n\n" +
                 $"{BookService.EscapeHtml(book.Description)}{linkPart}";
             var shortDesc = string.IsNullOrEmpty(book.Description) ? book.Author
                 : (book.Description.Length > 60 ? book.Description[..60] + "..." : book.Description);
@@ -700,7 +735,13 @@ public class MessageHandler
             };
         }).ToArray<InlineQueryResult>();
 
-        await bot.AnswerInlineQuery(query.Id, results, cacheTime: 300, cancellationToken: ct);
+        // При пустом запросе показываем подсказку про префиксы типа в шапке
+        var pmButton = string.IsNullOrEmpty(query.Query)
+            ? new InlineQueryResultsButton { Text = "💡 Совет: «статьи:тема», «радио:», «книги:молитва»", StartParameter = "help" }
+            : null;
+
+        await bot.AnswerInlineQuery(query.Id, results, cacheTime: 60,
+            button: pmButton, cancellationToken: ct);
     }
 
     // ════════════════════════════════════════════════════════════
