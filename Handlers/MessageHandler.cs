@@ -1125,36 +1125,72 @@ public class MessageHandler
         var ratings = _db.GetRatingsMap(telegramId);
 
         if (reading.Count == 0 && read.Count == 0)
-            return "У тебя пока нет книг в списке.\n\nВ карточке книги нажми «📖 Читаю» чтобы начать, или «✅ Прочитал» когда закончишь.";
+            return "У тебя пока нет материалов в списке.\n\nВ карточке материала нажми «📖 Читаю» чтобы начать, или «✅ Прочитал» когда закончишь.";
 
         var sb = new System.Text.StringBuilder();
 
+        // Ачивка по количеству завершённого
+        var (badge, nextHint) = NextBadge(read.Count);
+        if (!string.IsNullOrEmpty(badge))
+        {
+            sb.AppendLine(badge);
+            if (!string.IsNullOrEmpty(nextHint)) sb.AppendLine($"<i>{nextHint}</i>");
+            sb.AppendLine();
+        }
+
         if (reading.Count > 0)
         {
-            sb.AppendLine($"📖 <b>Сейчас читаю ({reading.Count}):</b>");
+            sb.AppendLine($"📖 <b>Сейчас в процессе ({reading.Count}):</b>");
             sb.AppendLine();
             foreach (var b in reading)
             {
-                var icon = b.Type == "audio" ? "🎧" : "📖";
-                sb.AppendLine($"{icon} «{BookService.EscapeHtml(b.Title)}» — {BookService.EscapeHtml(b.Author)}");
+                var line = $"{BookService.IconFor(b.Type)} «{BookService.EscapeHtml(b.Title)}»";
+                if (!string.IsNullOrWhiteSpace(b.Author)) line += $" — {BookService.EscapeHtml(b.Author)}";
+                sb.AppendLine(line);
             }
             if (read.Count > 0) sb.AppendLine();
         }
 
         if (read.Count > 0)
         {
-            sb.AppendLine($"✅ <b>Прочитано ({read.Count}):</b>");
+            sb.AppendLine($"✅ <b>Завершено ({read.Count}):</b>");
             sb.AppendLine();
             for (var i = 0; i < read.Count; i++)
             {
                 var b     = read[i];
-                var icon  = b.Type == "audio" ? "🎧" : "📖";
                 var stars = ratings.TryGetValue(b.Id, out var r) ? " " + new string('⭐', r) : "";
-                sb.AppendLine($"{i + 1}. {icon} «{BookService.EscapeHtml(b.Title)}» — {BookService.EscapeHtml(b.Author)}{stars}");
+                var line  = $"{i + 1}. {BookService.IconFor(b.Type)} «{BookService.EscapeHtml(b.Title)}»";
+                if (!string.IsNullOrWhiteSpace(b.Author)) line += $" — {BookService.EscapeHtml(b.Author)}";
+                sb.AppendLine(line + stars);
             }
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    // Подбираем подходящий бейдж и подсказку про следующий рубеж.
+    // Рубежи 5 / 10 / 25 / 50 / 100 — растущая шкала, чтобы было к чему стремиться.
+    private static (string Badge, string NextHint) NextBadge(int finished)
+    {
+        var milestones = new[] { (5, "🌱", "Первые шаги"),
+                                 (10, "📚", "Читатель"),
+                                 (25, "🏅", "Опытный читатель"),
+                                 (50, "🎓", "Знаток"),
+                                 (100, "🏆", "Мастер слова") };
+
+        (int Count, string Emoji, string Title)? earned = null;
+        (int Count, string Emoji, string Title)? next = null;
+        foreach (var m in milestones)
+        {
+            if (finished >= m.Item1) earned = (m.Item1, m.Item2, m.Item3);
+            else { next = (m.Item1, m.Item2, m.Item3); break; }
+        }
+
+        var badge = earned is null ? "" : $"{earned.Value.Emoji} <b>{earned.Value.Title}</b> · {finished} завершено";
+        var hint  = next is null
+            ? (earned is null ? "" : "Все рубежи взяты — ты молодец!")
+            : $"До «{next.Value.Title}» осталось {next.Value.Count - finished}.";
+        return (badge, hint);
     }
 
     private string BuildNotifySettingsMessage(long telegramId)
@@ -1237,8 +1273,15 @@ public class MessageHandler
         var active7d  = _db.GetActiveUsersCount(TimeSpan.FromDays(7));
         var ratings   = _db.GetRatingsCount();
         var booksAll  = _db.GetBooksCount();
-        var booksText = _db.GetCountByType("book");
-        var booksAud  = _db.GetCountByType("audio");
+        var byType = new (string T, string Label)[]
+        {
+            ("book", "книг"), ("audio", "аудио"), ("article", "статей"),
+            ("magazine", "журналов"), ("radio", "радио")
+        };
+        var counts = byType
+            .Select(t => (t.Label, Count: _db.GetCountByType(t.T)))
+            .Where(t => t.Count > 0)
+            .Select(t => $"{t.Label}: {t.Count}");
 
         var topRated  = _db.GetTopRatedBooks(5, minVotes: 3);
         var topShown  = _db.GetTopRecommendedBooks(5);
@@ -1249,7 +1292,7 @@ public class MessageHandler
         sb.AppendLine($"👥 Пользователей: <b>{users}</b>");
         sb.AppendLine($"📈 Активных за 7 дней: <b>{active7d}</b>");
         sb.AppendLine($"⭐ Оценок: <b>{ratings}</b>");
-        sb.AppendLine($"📚 Каталог: <b>{booksAll}</b> (книг: {booksText}, аудио: {booksAud})");
+        sb.AppendLine($"📚 Каталог: <b>{booksAll}</b> ({string.Join(", ", counts)})");
 
         if (topRated.Count > 0)
         {

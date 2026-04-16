@@ -168,20 +168,22 @@ public class BookService
         try
         {
             var catalog = string.Join("\n", candidates.Select(b =>
-                $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags} | {TruncateDesc(b.Description, 120)}"));
+                $"ID:{b.Id} | [{TypeNameFor(b.Type)}] «{b.Title}»{(string.IsNullOrWhiteSpace(b.Author) ? "" : " — " + b.Author)} | {b.Tags} | {TruncateDesc(b.Description, 120)}"));
 
             var avoidLine = lowRated.Count == 0 ? "" :
-                $"\nИзбегай книг, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
+                $"\nИзбегай материалов, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
 
             var systemMsg = """
-                Ты помощник христианского книжного клуба. Выбери 2 книги из списка, подходящие к запросу пользователя.
+                Ты помощник христианского контент-хаба. Подбираешь материалы из каталога: книги, аудиокниги, статьи, журналы, радио.
+                Выбери 2 материала из списка, подходящих к запросу пользователя. По возможности — РАЗНЫХ форматов
+                (например, книга + статья или аудиокнига + радио), если это уместно по теме.
                 Ответ — ТОЛЬКО JSON-массив объектов строго такого формата:
-                [{"id": 12, "comment": "короткий комментарий почему эта книга подходит"},
+                [{"id": 12, "comment": "короткий комментарий почему этот материал подходит"},
                  {"id": 47, "comment": "..."}]
                 Комментарий — 1-2 предложения, тёплый тон, без воды. Никакого текста вне JSON.
                 """;
 
-            var userMsg = $"Список книг:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
+            var userMsg = $"Каталог материалов:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
 
             var raw = await _claude.AskAsync(systemMsg, userMsg, maxTokens: 500);
             var parsed = ParseRecommendations(raw);
@@ -348,6 +350,15 @@ public class BookService
         "magazine" => "Открыть",
         "radio"    => "Слушать стрим",
         _          => "Читать"
+    };
+
+    internal static string TypeNameFor(string type) => type switch
+    {
+        "audio"    => "аудиокнига",
+        "article"  => "статья",
+        "magazine" => "журнал",
+        "radio"    => "радио",
+        _          => "книга"
     };
 
     private static string BuildHistoryContext(IEnumerable<(string Role, string Content)>? history)

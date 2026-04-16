@@ -52,9 +52,13 @@ public class MorningMessageJob : IJob
 
         var today      = DateTime.Now.ToString("dd MMMM yyyy", new System.Globalization.CultureInfo("ru-RU"));
         var dayOfYear  = DateTime.Now.DayOfYear;
-        var isMonday   = DateTime.Now.DayOfWeek == DayOfWeek.Monday;
+        var dow        = DateTime.Now.DayOfWeek;
+        var isMonday   = dow == DayOfWeek.Monday;
 
         string? genericMessage = null;
+        // Рекомендация по дню недели — общая для всех на сегодня.
+        // Считаем один раз, не дёргаем БД для каждого юзера.
+        var contentTip = BuildContentOfTheDay(dow, dayOfYear);
 
         var users = _db.GetAllUsers();
         _logger.LogInformation("[Scheduler] Всего пользователей: {Count}", users.Count);
@@ -86,7 +90,11 @@ public class MorningMessageJob : IJob
                     message = genericMessage;
                 }
 
+                if (!string.IsNullOrEmpty(contentTip))
+                    message = message.TrimEnd() + "\n\n" + contentTip;
+
                 await _bot.SendMessage(user.TelegramId, message,
+                    parseMode: ParseMode.Html,
                     linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
 
                 var verseRef = ExtractVerseRef(message);
@@ -113,6 +121,36 @@ public class MorningMessageJob : IJob
 
         _logger.LogInformation("[Scheduler] Рассылка завершена. Отправлено: {Sent}, заблокировано: {Blocked}", sent, blocked);
     }
+
+    // Возвращает HTML-строку с рекомендацией дня по типу контента.
+    // По вторникам и пятницам — пусто (только стих, как раньше).
+    private string BuildContentOfTheDay(DayOfWeek dow, int dayOfYear)
+    {
+        var (type, label) = dow switch
+        {
+            DayOfWeek.Monday    => ("article",  "📰 Статья дня"),
+            DayOfWeek.Wednesday => ("radio",    "🎙 Радио дня"),
+            DayOfWeek.Thursday  => ("magazine", "📖 Журнал дня"),
+            DayOfWeek.Saturday  => ("audio",    "🎧 Аудиокнига дня"),
+            DayOfWeek.Sunday    => ("book",     "📚 Книга недели"),
+            _                   => ("",         "")
+        };
+        if (type == "") return "";
+
+        var items = _db.GetByType(type);
+        if (items.Count == 0) return "";
+        var pick = items[dayOfYear % items.Count];
+
+        var line = $"<b>{label}:</b> «{Escape(pick.Title)}»";
+        if (!string.IsNullOrWhiteSpace(pick.Author))
+            line += $" — {Escape(pick.Author)}";
+        if (!string.IsNullOrEmpty(pick.Url))
+            line += $"\n<a href=\"{pick.Url}\">→ {BookService.LinkLabelFor(pick.Type)}</a>";
+        return line;
+    }
+
+    private static string Escape(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     private string PickFallbackVerse(int dayOfYear, string firstName)
     {
