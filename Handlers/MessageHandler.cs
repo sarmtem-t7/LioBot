@@ -582,7 +582,7 @@ public class MessageHandler
                     var annotation = await _bookService.AnnotateBookAsync(book);
                     var icon = book.Type == "audio" ? "🎧" : "📖";
                     var text = $"{icon} <b>«{BookService.EscapeHtml(book.Title)}»</b> — {BookService.EscapeHtml(book.Author)}\n\n{BookService.EscapeHtml(annotation)}";
-                    await SendMessage(bot, chatId, text, BookCardKeyboard(book, user.Id), ct);
+                    await ReplaceMessage(bot, chatId, messageId, text, BookCardKeyboard(book, user.Id), ct);
                 }
                 catch (Exception ex)
                 {
@@ -600,7 +600,7 @@ public class MessageHandler
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
                 var result = await _bookService.GetSimilarBooksAsync(similarId, user.Id);
-                await SendMessage(bot, chatId, result.Text, RecommendationKeyboard(result.Books), ct);
+                await ReplaceMessage(bot, chatId, messageId, result.Text, RecommendationKeyboard(result.Books), ct);
                 return;
             }
 
@@ -652,12 +652,12 @@ public class MessageHandler
                 }
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
-                await bot.SendMessage(chatId, "Ищу подходящие книги... 📖", cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, "Ищу подходящие книги... 📖", null, ct);
                 var history = _db.GetHistory(user.Id, limit: 10);
                 var result  = await _bookService.RecommendBooksAsync(tag, history, user.Id);
                 _db.SaveMessage(user.Id, "user",      $"Тема: {tag}");
                 _db.SaveMessage(user.Id, "assistant", result.Text);
-                await SendMessage(bot, chatId, result.Text, RecommendationKeyboard(result.Books), ct);
+                await ReplaceMessage(bot, chatId, messageId, result.Text, RecommendationKeyboard(result.Books), ct);
                 return;
             }
 
@@ -672,7 +672,7 @@ public class MessageHandler
             switch (data)
             {
                 case "menu:recommend":
-                    await bot.SendMessage(chatId, "Ищу подходящие книги... 📖", cancellationToken: ct);
+                    await ReplaceMessage(bot, chatId, messageId, "Ищу подходящие книги... 📖", null, ct);
                     var recHistory = _db.GetHistory(user.Id, limit: 10);
                     var recResult  = await _bookService.RecommendBooksAsync("посоветуй книгу", recHistory, user.Id);
                     _db.SaveMessage(user.Id, "user",      "Посоветуй книгу");
@@ -717,7 +717,7 @@ public class MessageHandler
                     break;
 
                 case "recommend:more":
-                    await bot.SendMessage(chatId, "Ищу другие варианты... 📖", cancellationToken: ct);
+                    await ReplaceMessage(bot, chatId, messageId, "Ищу другие варианты... 📖", null, ct);
                     var moreHistory = _db.GetHistory(user.Id, limit: 20);
                     var moreResult  = await _bookService.RecommendBooksAsync("посоветуй другие книги", moreHistory, user.Id);
                     _db.SaveMessage(user.Id, "user",      "Посоветуй другие книги");
@@ -737,7 +737,7 @@ public class MessageHandler
                     return;
             }
 
-            await SendMessage(bot, chatId, reply, keyboard, ct);
+            await ReplaceMessage(bot, chatId, messageId, reply, keyboard, ct);
         }
         catch (Exception ex)
         {
@@ -1213,6 +1213,39 @@ public class MessageHandler
     // ════════════════════════════════════════════════════════════
     // Утилиты отправки (защита от 4096 символов)
     // ════════════════════════════════════════════════════════════
+
+    // Удаляет сообщение, глотая ошибки (старое / уже удалено / нет прав).
+    private static async Task TryDelete(
+        ITelegramBotClient bot, long chatId, int messageId, CancellationToken ct)
+    {
+        try { await bot.DeleteMessage(chatId, messageId, ct); }
+        catch { /* not critical */ }
+    }
+
+    // Заменяет старое сообщение новым контентом: edit, если влезает,
+    // иначе delete + send. Используется в callback-обработчиках, чтобы
+    // нажатие кнопки не плодило новые сообщения в чате.
+    private static async Task ReplaceMessage(
+        ITelegramBotClient bot, long chatId, int oldMessageId,
+        string text, InlineKeyboardMarkup? keyboard, CancellationToken ct)
+    {
+        const int MaxLen = 4000;
+        if (text.Length <= MaxLen)
+        {
+            try
+            {
+                await bot.EditMessageText(chatId, oldMessageId, text,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: keyboard,
+                    linkPreviewOptions: new() { IsDisabled = true },
+                    cancellationToken: ct);
+                return;
+            }
+            catch { /* старое сообщение / тот же контент / лимит — fall through */ }
+        }
+        await TryDelete(bot, chatId, oldMessageId, ct);
+        await SendMessage(bot, chatId, text, keyboard, ct);
+    }
 
     private static async Task SendMessage(
         ITelegramBotClient bot, long chatId, string text,
