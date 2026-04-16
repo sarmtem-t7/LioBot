@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using LioBot.Data;
+using LioBot.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Quartz;
@@ -309,6 +310,86 @@ public class ReadingReminderJob : IJob
     }
 }
 
+/// <summary>
+/// Каждую ночь импортирует свежий контент с lio-int.com и lio-blog.com,
+/// затем шлёт сводку всем админам в Telegram.
+/// </summary>
+[DisallowConcurrentExecution]
+public class DailyImportJob : IJob
+{
+    private readonly ContentImportService _importer;
+    private readonly ITelegramBotClient _bot;
+    private readonly IConfiguration _config;
+    private readonly ILogger<DailyImportJob> _logger;
+
+    public DailyImportJob(
+        ContentImportService importer,
+        ITelegramBotClient bot,
+        IConfiguration config,
+        ILogger<DailyImportJob> logger)
+    {
+        _importer = importer;
+        _bot = bot;
+        _config = config;
+        _logger = logger;
+    }
+
+    public async Task Execute(IJobExecutionContext context)
+    {
+        var ct = context.CancellationToken;
+        _logger.LogInformation("[DailyImport] Запуск ночного автоимпорта…");
+        try
+        {
+            var summary = await _importer.ImportAllAsync(ct);
+            _logger.LogInformation("[DailyImport] Готово: {Total} новых единиц", summary.Total);
+            if (summary.Total > 0)
+                await NotifyAdminsAsync(summary, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            _logger.LogInformation("[DailyImport] Уже выполняется — пропуск");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[DailyImport] Ошибка автоимпорта");
+            await NotifyAdminsErrorAsync(ex, ct);
+        }
+    }
+
+    private async Task NotifyAdminsAsync(ImportSummary s, CancellationToken ct)
+    {
+        var lines = new List<string> { "<b>🌙 Ночной автоимпорт завершён</b>", "" };
+        if (s.Audio    > 0) lines.Add($"🎧 Аудиокниги: <b>{s.Audio}</b>");
+        if (s.Articles > 0) lines.Add($"📰 Статьи: <b>{s.Articles}</b>");
+        if (s.Radio    > 0) lines.Add($"🎙 Радио: <b>{s.Radio}</b>");
+        if (s.Magazines> 0) lines.Add($"📖 Журналы: <b>{s.Magazines}</b>");
+        lines.Add("");
+        lines.Add($"Итого новых: <b>{s.Total}</b>");
+        var text = string.Join("\n", lines);
+        foreach (var id in ParseAdminIds())
+        {
+            try { await _bot.SendMessage(id, text, parseMode: ParseMode.Html, cancellationToken: ct); }
+            catch (Exception ex) { _logger.LogWarning("[DailyImport] Не доставлено {Id}: {Err}", id, ex.Message); }
+        }
+    }
+
+    private async Task NotifyAdminsErrorAsync(Exception ex, CancellationToken ct)
+    {
+        var text = $"⚠️ Автоимпорт упал: <code>{System.Net.WebUtility.HtmlEncode(ex.Message)}</code>";
+        foreach (var id in ParseAdminIds())
+        {
+            try { await _bot.SendMessage(id, text, parseMode: ParseMode.Html, cancellationToken: ct); }
+            catch { /* ignore */ }
+        }
+    }
+
+    private IEnumerable<long> ParseAdminIds() =>
+        (_config["AdminIds"] ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => long.TryParse(s.Trim(), out var id) ? id : 0L)
+            .Where(id => id != 0);
+}
+
 public static class SchedulerConfigurator
 {
     public static void AddMorningSchedule(this IServiceCollectionQuartzConfigurator quartz, IConfiguration config)
@@ -343,6 +424,15 @@ public static class SchedulerConfigurator
             .ForJob(reminderKey)
             .WithIdentity("ReadingReminderTrigger")
             .WithCronSchedule("0 0 19 * * ?", x => x.InTimeZone(tz))
+        );
+
+        // Ночной автоимпорт — каждый день в 04:00
+        var importKey = new JobKey("DailyImportJob");
+        quartz.AddJob<DailyImportJob>(opts => opts.WithIdentity(importKey));
+        quartz.AddTrigger(opts => opts
+            .ForJob(importKey)
+            .WithIdentity("DailyImportTrigger")
+            .WithCronSchedule("0 0 4 * * ?", x => x.InTimeZone(tz))
         );
     }
 
