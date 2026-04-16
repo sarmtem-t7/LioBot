@@ -481,6 +481,53 @@ public partial class DatabaseContext
         return list;
     }
 
+    // --- Авторы (на базе поля Books.Author) ---
+
+    // Возвращает (Author, Count) по убыванию числа материалов.
+    // Авторы с пустым именем отсекаются.
+    public List<(string Author, int Count)> GetTopAuthors(int? limit = null, int offset = 0)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        var sql = "SELECT TRIM(Author) AS A, COUNT(*) AS C FROM Books " +
+                  "WHERE Author IS NOT NULL AND TRIM(Author) <> '' " +
+                  "GROUP BY A ORDER BY C DESC, A ASC";
+        if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        var list = new List<(string, int)>();
+        while (reader.Read())
+            list.Add((reader.GetString(0), reader.GetInt32(1)));
+        return list;
+    }
+
+    public int CountAuthors()
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(DISTINCT TRIM(Author)) FROM Books " +
+                          "WHERE Author IS NOT NULL AND TRIM(Author) <> ''";
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    public List<Book> GetByAuthor(string author, int? limit = null, int offset = 0)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books " +
+                  "WHERE TRIM(Author) = $author ORDER BY Id DESC";
+        if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$author", author.Trim());
+        using var reader = cmd.ExecuteReader();
+        var list = new List<Book>();
+        while (reader.Read()) list.Add(MapBook(reader));
+        return list;
+    }
+
     // --- SeenBooks ---
 
     public HashSet<long> GetSeenBookIds(long telegramId)

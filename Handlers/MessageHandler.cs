@@ -296,6 +296,34 @@ public class MessageHandler
 
         try
         {
+            // ── Авторы: список с пагинацией ──────────────────────────
+            if (data.StartsWith("authors:"))
+            {
+                var page = int.TryParse(data[8..], out var ap) ? ap : 0;
+                var (text, kb) = BuildAuthorsPage(page);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId, text,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: kb,
+                    linkPreviewOptions: new() { IsDisabled = true },
+                    cancellationToken: ct);
+                return;
+            }
+
+            // ── Карточка автора: его материалы ───────────────────────
+            if (data.StartsWith("author:"))
+            {
+                var slug = data[7..];
+                var (text, kb) = BuildAuthorCard(slug);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId, text,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: kb,
+                    linkPreviewOptions: new() { IsDisabled = true },
+                    cancellationToken: ct);
+                return;
+            }
+
             // ── Каталог: навигация по страницам + фильтр по типу ──────
             if (data.StartsWith("catalog:"))
             {
@@ -890,6 +918,92 @@ public class MessageHandler
     }
 
     // ════════════════════════════════════════════════════════════
+    // Авторы — список и карточка
+    // ════════════════════════════════════════════════════════════
+
+    private const int AuthorsPageSize = 12;
+
+    // token → author name. Заполняется лениво на построении каждой страницы;
+    // нужен, потому что callback_data ограничено 64 байтами и UTF-8 имена
+    // могут не влезть. Выживает все время работы процесса.
+    private static readonly Dictionary<string, string> _authorTokens = new();
+
+    private static string AuthorToken(string author)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(author);
+        var hash = System.Security.Cryptography.SHA1.HashData(bytes);
+        var token = Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
+        _authorTokens[token] = author;
+        return token;
+    }
+
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildAuthorsPage(int page)
+    {
+        var total = _db.CountAuthors();
+        if (total == 0)
+            return ("Авторы пока не определены — у материалов не указано имя автора.", MainMenuKeyboard());
+
+        var totalPages = (int)Math.Ceiling(total / (double)AuthorsPageSize);
+        page = Math.Clamp(page, 0, totalPages - 1);
+        var rows = _db.GetTopAuthors(AuthorsPageSize, page * AuthorsPageSize);
+
+        var text = $"👤 <b>Авторы</b> (стр. {page + 1}/{totalPages}) — нажми, чтобы открыть материалы:";
+        var buttons = new List<InlineKeyboardButton[]>();
+        foreach (var (author, count) in rows)
+        {
+            var label = author.Length > 40 ? author[..40] + "…" : author;
+            buttons.Add([InlineKeyboardButton.WithCallbackData(
+                $"{label} · {count}", $"author:{AuthorToken(author)}")]);
+        }
+
+        var nav = new List<InlineKeyboardButton>();
+        if (page > 0) nav.Add(InlineKeyboardButton.WithCallbackData("←", $"authors:{page - 1}"));
+        nav.Add(InlineKeyboardButton.WithCallbackData($"стр. {page + 1}/{totalPages}", $"authors:{page}"));
+        if (page < totalPages - 1) nav.Add(InlineKeyboardButton.WithCallbackData("→", $"authors:{page + 1}"));
+        buttons.Add(nav.ToArray());
+        buttons.Add([HomeButton()]);
+
+        return (text, new InlineKeyboardMarkup(buttons));
+    }
+
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildAuthorCard(string token)
+    {
+        if (!_authorTokens.TryGetValue(token, out var author))
+        {
+            // Промахнулись по кэшу (рестарт процесса) — ленивый разогрев:
+            // прогоняем всех авторов через AuthorToken, заодно ища нужного.
+            foreach (var (name, _) in _db.GetTopAuthors())
+                if (AuthorToken(name) == token) { author = name; break; }
+        }
+        if (author is null)
+            return ("Автор не найден — открой список заново.", new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0") },
+                new[] { HomeButton() }
+            }));
+
+        var items = _db.GetByAuthor(author, limit: 50);
+        var sb = new System.Text.StringBuilder();
+        sb.Append("👤 <b>").Append(BookService.EscapeHtml(author)).Append("</b>\n");
+        sb.Append("Материалов: <b>").Append(items.Count).Append("</b>\n\n");
+        sb.Append("Нажми на материал, чтобы открыть карточку:");
+
+        var buttons = new List<InlineKeyboardButton[]>();
+        foreach (var b in items.Take(20))
+        {
+            var label = $"{BookService.IconFor(b.Type)} {b.Title}";
+            if (label.Length > 48) label = label[..48] + "…";
+            buttons.Add([InlineKeyboardButton.WithCallbackData(label, $"book:card:{b.Id}")]);
+        }
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0"),
+            HomeButton()
+        });
+        return (sb.ToString(), new InlineKeyboardMarkup(buttons));
+    }
+
+    // ════════════════════════════════════════════════════════════
     // Клавиатуры
     // ════════════════════════════════════════════════════════════
 
@@ -912,9 +1026,10 @@ public class MessageHandler
             InlineKeyboardButton.WithCallbackData("🎲 Случайное","book:random")
         },
         new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",     "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("📌 Мои материалы","menu:mybooks") },
-        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль",      "menu:profile"),
-                InlineKeyboardButton.WithCallbackData("🔔 Рассылка",     "menu:notifications") }
+                InlineKeyboardButton.WithCallbackData("👤 Авторы",       "authors:0") },
+        new[] { InlineKeyboardButton.WithCallbackData("📌 Мои материалы","menu:mybooks"),
+                InlineKeyboardButton.WithCallbackData("⚙️ Профиль",      "menu:profile") },
+        new[] { InlineKeyboardButton.WithCallbackData("🔔 Рассылка",     "menu:notifications") }
     });
 
     private static InlineKeyboardMarkup RecommendationKeyboard(List<Book> books)
