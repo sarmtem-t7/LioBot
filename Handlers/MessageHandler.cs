@@ -17,6 +17,7 @@ public class MessageHandler
     private readonly DatabaseContext _db;
     private readonly BookService _bookService;
     private readonly ClaudeService _claude;
+    private readonly ContentImportService _importer;
     private readonly ILogger<MessageHandler> _logger;
     private readonly HashSet<long> _adminIds;
 
@@ -61,12 +62,14 @@ public class MessageHandler
         DatabaseContext db,
         BookService bookService,
         ClaudeService claude,
+        ContentImportService importer,
         IConfiguration configuration,
         ILogger<MessageHandler> logger)
     {
         _db = db;
         _bookService = bookService;
         _claude = claude;
+        _importer = importer;
         _logger = logger;
 
         _adminIds = (configuration["AdminIds"] ?? "")
@@ -179,6 +182,57 @@ public class MessageHandler
             {
                 reply = "Напиши что ищешь после команды:\n<code>/search молитва</code>\nили просто опиши ситуацию словами — я пойму.";
                 keyboard = MainMenuKeyboard();
+            }
+            else if (text.StartsWith("/import"))
+            {
+                if (_adminIds.Count > 0 && !_adminIds.Contains(telegramUser.Id))
+                {
+                    reply = "Эта команда доступна только администраторам.";
+                }
+                else if (_importer.IsRunning)
+                {
+                    reply = "Импорт уже выполняется. Подожди, пока завершится текущий.";
+                }
+                else
+                {
+                    var arg = text.Replace("/import", "").Trim().ToLowerInvariant();
+                    await bot.SendMessage(chatId,
+                        "🔄 Запускаю импорт. Это займёт от пары минут до получаса — отвечу, когда закончу.",
+                        cancellationToken: ct);
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            int audio = 0, articles = 0, radio = 0, mags = 0;
+                            switch (arg)
+                            {
+                                case "audio":     audio    = await _importer.ImportAudiobooksAsync(); break;
+                                case "articles":  articles = await _importer.ImportArticlesAsync();   break;
+                                case "radio":     radio    = await _importer.ImportRadioAsync();      break;
+                                case "magazines": mags     = await _importer.ImportMagazinesAsync();  break;
+                                default:
+                                    var summary = await _importer.ImportAllAsync();
+                                    audio = summary.Audio; articles = summary.Articles;
+                                    radio = summary.Radio; mags = summary.Magazines;
+                                    break;
+                            }
+                            sw.Stop();
+                            await bot.SendMessage(chatId,
+                                $"✅ Импорт завершён за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
+                                $"🎧 Аудио: +{audio}\n📰 Статьи: +{articles}\n" +
+                                $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}",
+                                cancellationToken: CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[Import] Ошибка");
+                            await bot.SendMessage(chatId, $"❌ Импорт упал: {ex.Message}",
+                                cancellationToken: CancellationToken.None);
+                        }
+                    }, CancellationToken.None);
+                    return;
+                }
             }
             else if (text.StartsWith("/addbook"))
             {

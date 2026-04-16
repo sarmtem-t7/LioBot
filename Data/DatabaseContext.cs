@@ -444,6 +444,28 @@ public partial class DatabaseContext
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
+    public bool MagazineExistsBySlug(string slug)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM Magazines WHERE Slug = $s LIMIT 1";
+        cmd.Parameters.AddWithValue("$s", slug);
+        return cmd.ExecuteScalar() != null;
+    }
+
+    public void AddMagazine(string slug, string title, string url)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO Magazines (Slug, Title, Url) VALUES ($s, $t, $u)";
+        cmd.Parameters.AddWithValue("$s", slug);
+        cmd.Parameters.AddWithValue("$t", title);
+        cmd.Parameters.AddWithValue("$u", url);
+        cmd.ExecuteNonQuery();
+    }
+
     public List<Book> GetByType(string type, int? limit = null, int offset = 0)
     {
         using var conn = CreateConnection();

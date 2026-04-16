@@ -25,6 +25,7 @@ builder.Services.AddHttpClient("anthropic");
 builder.Services.AddSingleton<DatabaseContext>();
 builder.Services.AddSingleton<ClaudeService>();
 builder.Services.AddSingleton<BookService>();
+builder.Services.AddSingleton<ContentImportService>();
 builder.Services.AddSingleton<MessageHandler>();
 
 // --- Telegram Bot Client ---
