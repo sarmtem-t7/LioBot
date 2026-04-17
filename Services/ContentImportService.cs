@@ -6,9 +6,9 @@ using Microsoft.Extensions.Logging;
 
 namespace LioBot.Services;
 
-public record ImportSummary(int Books, int Audio, int Articles, int Radio, int Magazines)
+public record ImportSummary(int Books, int Audio, int Articles, int Radio, int Magazines, int Issues = 0)
 {
-    public int Total => Books + Audio + Articles + Radio + Magazines;
+    public int Total => Books + Audio + Articles + Radio + Magazines + Issues;
 }
 
 // Импорт контента с lio-int.com и lio-blog.com прямо из бота — повторяет
@@ -52,7 +52,8 @@ public class ContentImportService
             var articles = await ImportArticlesAsync(ct);
             var radio    = await ImportRadioAsync(ct);
             var mags     = await ImportMagazinesAsync(ct);
-            return new ImportSummary(0, audio, articles, radio, mags);
+            var issues   = await ImportMagazineIssuesAsync(ct);
+            return new ImportSummary(0, audio, articles, radio, mags, issues);
         }
         finally { _gate.Release(); }
     }
@@ -101,6 +102,51 @@ public class ContentImportService
                      ?? slug;
             _db.AddMagazine(slug, title, url);
             added++;
+        }
+        return added;
+    }
+
+    // Парсит обложки выпусков из CDN-ссылок на страницах журналов.
+    // Формат файлов: "2025 Вера и Жизнь - 3 a.jpg", "2024 Тропинка - 1a.jpg"
+    private static readonly Regex IssueFileRe = new(
+        @"(\d{4})\+([^/]+?)\+?-\+?(\d+)\s*a\.(jpg|png)",
+        RegexOptions.IgnoreCase);
+
+    public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)
+    {
+        var slugs = new[] { "vera", "tropinka" };
+        var added = 0;
+        foreach (var slug in slugs)
+        {
+            var magId = _db.GetMagazineIdBySlug(slug);
+            if (magId is null)
+            {
+                _logger.LogDebug("[Import] Журнал {Slug} не найден в Magazines — пропуск", slug);
+                continue;
+            }
+            var url = $"https://www.lio-int.com/zurnaly/{slug}";
+            var html = await FetchAsync(url, ct);
+            if (string.IsNullOrEmpty(html)) continue;
+
+            var seen = new HashSet<string>();
+            foreach (Match m in Regex.Matches(html,
+                @"https://irp\.cdn-website\.com/[^""]+\.(jpg|png)", RegexOptions.IgnoreCase))
+            {
+                var imgUrl = m.Value;
+                var decoded = System.Net.WebUtility.UrlDecode(imgUrl.Replace('+', ' '));
+                var fileMatch = IssueFileRe.Match(imgUrl);
+                if (!fileMatch.Success) continue;
+
+                var year = fileMatch.Groups[1].Value;
+                var number = fileMatch.Groups[3].Value;
+                var title = $"{year} №{number}";
+                if (!seen.Add(title)) continue;
+                if (_db.MagazineIssueExists(magId.Value, title)) continue;
+
+                _db.AddMagazineIssue(magId.Value, title, url, imgUrl, $"{year}-01-01");
+                added++;
+                _logger.LogInformation("[Import] Выпуск: {Slug} {Title}", slug, title);
+            }
         }
         return added;
     }

@@ -363,6 +363,7 @@ public class DailyImportJob : IJob
         if (s.Articles > 0) lines.Add($"📰 Статьи: <b>{s.Articles}</b>");
         if (s.Radio    > 0) lines.Add($"🎙 Радио: <b>{s.Radio}</b>");
         if (s.Magazines> 0) lines.Add($"📖 Журналы: <b>{s.Magazines}</b>");
+        if (s.Issues   > 0) lines.Add($"📰 Выпуски: <b>{s.Issues}</b>");
         lines.Add("");
         lines.Add($"Итого новых: <b>{s.Total}</b>");
         var text = string.Join("\n", lines);

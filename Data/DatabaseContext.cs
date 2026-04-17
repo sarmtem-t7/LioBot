@@ -466,6 +466,73 @@ public partial class DatabaseContext
         cmd.ExecuteNonQuery();
     }
 
+    public long? GetMagazineIdBySlug(string slug)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id FROM Magazines WHERE Slug = $s LIMIT 1";
+        cmd.Parameters.AddWithValue("$s", slug);
+        var result = cmd.ExecuteScalar();
+        return result != null ? (long)result : null;
+    }
+
+    public bool MagazineIssueExists(long magazineId, string title)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM MagazineIssues WHERE MagazineId = $m AND Title = $t LIMIT 1";
+        cmd.Parameters.AddWithValue("$m", magazineId);
+        cmd.Parameters.AddWithValue("$t", title);
+        return cmd.ExecuteScalar() != null;
+    }
+
+    public void AddMagazineIssue(long magazineId, string title, string url, string coverUrl, string? releasedAt)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO MagazineIssues (MagazineId, Title, Url, CoverUrl, ReleasedAt)
+            VALUES ($m, $t, $u, $c, $r)
+            """;
+        cmd.Parameters.AddWithValue("$m", magazineId);
+        cmd.Parameters.AddWithValue("$t", title);
+        cmd.Parameters.AddWithValue("$u", url);
+        cmd.Parameters.AddWithValue("$c", coverUrl);
+        cmd.Parameters.AddWithValue("$r", (object?)releasedAt ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    public List<(long Id, string Title, string CoverUrl, string? ReleasedAt)> GetMagazineIssues(long magazineId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Title, CoverUrl, ReleasedAt FROM MagazineIssues WHERE MagazineId = $m ORDER BY ReleasedAt DESC, Id DESC";
+        cmd.Parameters.AddWithValue("$m", magazineId);
+        using var reader = cmd.ExecuteReader();
+        var list = new List<(long, string, string, string?)>();
+        while (reader.Read())
+            list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3)));
+        return list;
+    }
+
+    public List<(long Id, string Slug, string Title, string Url)> GetAllMagazines()
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Slug, Title, Url FROM Magazines ORDER BY Title";
+        using var reader = cmd.ExecuteReader();
+        var list = new List<(long, string, string, string)>();
+        while (reader.Read())
+            list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        return list;
+    }
+
     public List<Book> GetByType(string type, int? limit = null, int offset = 0)
     {
         using var conn = CreateConnection();

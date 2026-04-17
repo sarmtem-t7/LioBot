@@ -296,6 +296,31 @@ public class MessageHandler
 
         try
         {
+            // ── Журналы: список изданий и выпуски ─────────────────────
+            if (data == "magazines:list")
+            {
+                var (text, kb) = BuildMagazinesList();
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId, text,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: kb,
+                    linkPreviewOptions: new() { IsDisabled = true },
+                    cancellationToken: ct);
+                return;
+            }
+
+            if (data.StartsWith("mag:issues:") && long.TryParse(data[11..], out var magId))
+            {
+                var (text, kb) = BuildMagazineIssues(magId);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId, text,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: kb,
+                    linkPreviewOptions: new() { IsDisabled = true },
+                    cancellationToken: ct);
+                return;
+            }
+
             // ── Авторы: список с пагинацией ──────────────────────────
             if (data.StartsWith("authors:"))
             {
@@ -907,7 +932,7 @@ public class MessageHandler
         buttons.Add(new[]
         {
             InlineKeyboardButton.WithCallbackData(Mark("article",  "📰 Статьи"),  "catalog:article:0"),
-            InlineKeyboardButton.WithCallbackData(Mark("magazine", "📖 Журналы"), "catalog:magazine:0"),
+            InlineKeyboardButton.WithCallbackData(Mark("magazine", "📖 Журналы"), "magazines:list"),
             InlineKeyboardButton.WithCallbackData(Mark("radio",    "🎙 Радио"),   "catalog:radio:0")
         });
 
@@ -1004,6 +1029,56 @@ public class MessageHandler
     }
 
     // ════════════════════════════════════════════════════════════
+    // Журналы — список изданий и выпуски
+    // ════════════════════════════════════════════════════════════
+
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazinesList()
+    {
+        var mags = _db.GetAllMagazines();
+        if (mags.Count == 0)
+            return ("Журналы ещё не загружены. Запусти /import.", MainMenuKeyboard());
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("📖 <b>Журналы</b>\n\nВыбери издание:");
+
+        var buttons = new List<InlineKeyboardButton[]>();
+        foreach (var (id, slug, title, url) in mags)
+        {
+            var issues = _db.GetMagazineIssues(id);
+            var label = issues.Count > 0 ? $"📖 {title} ({issues.Count} выпусков)" : $"📖 {title}";
+            buttons.Add([InlineKeyboardButton.WithCallbackData(label, $"mag:issues:{id}")]);
+        }
+        buttons.Add([HomeButton()]);
+        return (sb.ToString(), new InlineKeyboardMarkup(buttons));
+    }
+
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazineIssues(long magazineId)
+    {
+        var issues = _db.GetMagazineIssues(magazineId);
+        if (issues.Count == 0)
+            return ("Выпуски ещё не загружены. Запусти /import.", new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list") },
+                new[] { HomeButton() }
+            }));
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("📖 <b>Выпуски</b>\n\n");
+        foreach (var (id, title, coverUrl, releasedAt) in issues.Take(30))
+        {
+            sb.Append($"• {BookService.EscapeHtml(title)}\n");
+        }
+
+        var buttons = new List<InlineKeyboardButton[]>();
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list"),
+            HomeButton()
+        });
+        return (sb.ToString(), new InlineKeyboardMarkup(buttons));
+    }
+
+    // ════════════════════════════════════════════════════════════
     // Клавиатуры
     // ════════════════════════════════════════════════════════════
 
@@ -1022,7 +1097,7 @@ public class MessageHandler
         new[]
         {
             InlineKeyboardButton.WithCallbackData("🎙 Радио",   "catalog:radio:0"),
-            InlineKeyboardButton.WithCallbackData("📖 Журналы", "catalog:magazine:0"),
+            InlineKeyboardButton.WithCallbackData("📖 Журналы", "magazines:list"),
             InlineKeyboardButton.WithCallbackData("🎲 Случайное","book:random")
         },
         new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",     "menu:topics"),
