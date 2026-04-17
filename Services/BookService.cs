@@ -228,7 +228,7 @@ public class BookService
             _db.MarkBooksAsSeen(telegramId, selectedBooks.Select(b => b.Id));
 
         return new RecommendationResult(
-            FormatRecommendation("📚 Вот что нашёл:", selectedBooks, comments),
+            FormatRecommendation("📚 Вот что подобрал:", selectedBooks, comments),
             selectedBooks);
     }
 

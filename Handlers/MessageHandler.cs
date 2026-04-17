@@ -272,7 +272,7 @@ public class MessageHandler
             }
             else if (IsBookRequest(text))
             {
-                var tmp = await bot.SendMessage(chatId, "Ищу подходящие книги... 📖", cancellationToken: ct);
+                var tmp = await bot.SendMessage(chatId, "Подбираю материалы... 📚", cancellationToken: ct);
                 tempMsgId = tmp.MessageId;
                 var history = _db.GetHistory(telegramUser.Id, limit: 10);
                 var result  = await _bookService.RecommendBooksAsync(text, history, telegramUser.Id);
@@ -706,7 +706,7 @@ public class MessageHandler
                 }
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
-                await ReplaceMessage(bot, chatId, messageId, "Ищу подходящие книги... 📖", null, ct);
+                await ReplaceMessage(bot, chatId, messageId, "Подбираю материалы... 📚", null, ct);
                 var history = _db.GetHistory(user.Id, limit: 10);
                 var result  = await _bookService.RecommendBooksAsync(tag, history, user.Id);
                 _db.SaveMessage(user.Id, "user",      $"Тема: {tag}");
@@ -726,7 +726,7 @@ public class MessageHandler
             switch (data)
             {
                 case "menu:recommend":
-                    await ReplaceMessage(bot, chatId, messageId, "Ищу подходящие книги... 📖", null, ct);
+                    await ReplaceMessage(bot, chatId, messageId, "Подбираю материалы... 📚", null, ct);
                     var recHistory = _db.GetHistory(user.Id, limit: 10);
                     var recResult  = await _bookService.RecommendBooksAsync("посоветуй книгу", recHistory, user.Id);
                     _db.SaveMessage(user.Id, "user",      "Посоветуй книгу");
@@ -771,7 +771,7 @@ public class MessageHandler
                     break;
 
                 case "recommend:more":
-                    await ReplaceMessage(bot, chatId, messageId, "Ищу другие варианты... 📖", null, ct);
+                    await ReplaceMessage(bot, chatId, messageId, "Ищу другие варианты... 📚", null, ct);
                     var moreHistory = _db.GetHistory(user.Id, limit: 20);
                     var moreResult  = await _bookService.RecommendBooksAsync("посоветуй другие книги", moreHistory, user.Id);
                     _db.SaveMessage(user.Id, "user",      "Посоветуй другие книги");
