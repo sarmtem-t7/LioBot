@@ -1035,41 +1035,44 @@ public class MessageHandler
     private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazinesList()
     {
         var mags = _db.GetAllMagazines();
-        if (mags.Count == 0)
+        // Показываем только журналы, у которых есть выпуски
+        var withIssues = mags
+            .Select(m => (m.Id, m.Slug, m.Title, m.Url, Count: _db.GetMagazineIssues(m.Id).Count))
+            .Where(m => m.Count > 0)
+            .ToList();
+
+        if (withIssues.Count == 0)
             return ("Журналы ещё не загружены. Запусти /import.", MainMenuKeyboard());
 
-        var sb = new System.Text.StringBuilder();
-        sb.Append("📖 <b>Журналы</b>\n\nВыбери издание:");
-
         var buttons = new List<InlineKeyboardButton[]>();
-        foreach (var (id, slug, title, url) in mags)
-        {
-            var issues = _db.GetMagazineIssues(id);
-            var label = issues.Count > 0 ? $"📖 {title} ({issues.Count} выпусков)" : $"📖 {title}";
-            buttons.Add([InlineKeyboardButton.WithCallbackData(label, $"mag:issues:{id}")]);
-        }
+        foreach (var (id, slug, title, url, count) in withIssues)
+            buttons.Add([InlineKeyboardButton.WithCallbackData(
+                $"📖 {title} · {count} выпусков", $"mag:issues:{id}")]);
         buttons.Add([HomeButton()]);
-        return (sb.ToString(), new InlineKeyboardMarkup(buttons));
+        return ("📖 <b>Журналы</b>\n\nВыбери издание:", new InlineKeyboardMarkup(buttons));
     }
 
     private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazineIssues(long magazineId)
     {
         var issues = _db.GetMagazineIssues(magazineId);
         if (issues.Count == 0)
-            return ("Выпуски ещё не загружены. Запусти /import.", new InlineKeyboardMarkup(new[]
+            return ("Выпуски ещё не загружены.", new InlineKeyboardMarkup(new[]
             {
                 new[] { InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list") },
                 new[] { HomeButton() }
             }));
 
         var sb = new System.Text.StringBuilder();
-        sb.Append("📖 <b>Выпуски</b>\n\n");
-        foreach (var (id, title, coverUrl, releasedAt) in issues.Take(30))
-        {
-            sb.Append($"• {BookService.EscapeHtml(title)}\n");
-        }
+        sb.Append("📖 <b>Выпуски</b> — нажми, чтобы читать:");
 
         var buttons = new List<InlineKeyboardButton[]>();
+        foreach (var (id, title, url, coverUrl, releasedAt) in issues.Take(30))
+        {
+            if (!string.IsNullOrEmpty(url) && url.StartsWith("http"))
+                buttons.Add([InlineKeyboardButton.WithUrl($"📖 {title} — Читать", url)]);
+            else
+                buttons.Add([InlineKeyboardButton.WithCallbackData($"📖 {title}", $"mag:issues:{magazineId}")]);
+        }
         buttons.Add(new[]
         {
             InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list"),

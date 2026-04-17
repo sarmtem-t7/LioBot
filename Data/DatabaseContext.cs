@@ -505,18 +505,30 @@ public partial class DatabaseContext
         cmd.ExecuteNonQuery();
     }
 
-    public List<(long Id, string Title, string CoverUrl, string? ReleasedAt)> GetMagazineIssues(long magazineId)
+    public void UpdateMagazineIssueUrl(long magazineId, string title, string url)
     {
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, CoverUrl, ReleasedAt FROM MagazineIssues WHERE MagazineId = $m ORDER BY ReleasedAt DESC, Id DESC";
+        cmd.CommandText = "UPDATE MagazineIssues SET Url = $u WHERE MagazineId = $m AND Title = $t";
+        cmd.Parameters.AddWithValue("$u", url);
+        cmd.Parameters.AddWithValue("$m", magazineId);
+        cmd.Parameters.AddWithValue("$t", title);
+        cmd.ExecuteNonQuery();
+    }
+
+    public List<(long Id, string Title, string Url, string CoverUrl, string? ReleasedAt)> GetMagazineIssues(long magazineId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Title, Url, CoverUrl, ReleasedAt FROM MagazineIssues WHERE MagazineId = $m ORDER BY ReleasedAt DESC, Id DESC";
         cmd.Parameters.AddWithValue("$m", magazineId);
         using var reader = cmd.ExecuteReader();
-        var list = new List<(long, string, string, string?)>();
+        var list = new List<(long, string, string, string, string?)>();
         while (reader.Read())
             list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3)));
+                reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
         return list;
     }
 
