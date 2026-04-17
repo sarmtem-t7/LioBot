@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LioBot.Data;
 using LioBot.Models;
 using LioBot.Services;
@@ -22,6 +23,8 @@ public class MessageHandler
     private readonly HashSet<long> _adminIds;
 
     private const int CatalogPageSize = 8;
+
+    private static readonly ConcurrentDictionary<long, int> _lastBotMsg = new();
 
     // Быстрые темы для подбора книг
     private static readonly (string Label, string Tag)[] QuickTopics =
@@ -112,12 +115,16 @@ public class MessageHandler
 
         try
         {
+            if (_lastBotMsg.TryRemove(chatId, out var prevMsgId))
+                await TryDelete(bot, chatId, prevMsgId, ct);
+
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
             var readDelay = Math.Clamp(text.Length * 30, 600, 2500);
             await Task.Delay(readDelay + Random.Shared.Next(0, 400), ct);
 
             string reply;
             InlineKeyboardMarkup? keyboard = null;
+            int? tempMsgId = null;
             var isCommand = text.StartsWith("/");
 
             if (text.StartsWith("/start"))
@@ -174,7 +181,8 @@ public class MessageHandler
             else if (text.StartsWith("/search "))
             {
                 var query = text[8..].Trim();
-                await bot.SendMessage(chatId, "Ищу... 📖", cancellationToken: ct);
+                var tmp = await bot.SendMessage(chatId, "Ищу... 📖", cancellationToken: ct);
+                tempMsgId = tmp.MessageId;
                 var result = await _bookService.RecommendBooksAsync(query, null, telegramUser.Id);
                 reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
             }
@@ -196,9 +204,10 @@ public class MessageHandler
                 else
                 {
                     var arg = text.Replace("/import", "").Trim().ToLowerInvariant();
-                    await bot.SendMessage(chatId,
+                    var startMsg = await bot.SendMessage(chatId,
                         "🔄 Запускаю импорт. Это займёт от пары минут до получаса — отвечу, когда закончу.",
                         cancellationToken: ct);
+                    _lastBotMsg[chatId] = startMsg.MessageId;
                     _ = Task.Run(async () =>
                     {
                         try
@@ -219,20 +228,24 @@ public class MessageHandler
                                     break;
                             }
                             sw.Stop();
+                            if (_lastBotMsg.TryRemove(chatId, out var oldId))
+                                await TryDelete(bot, chatId, oldId, CancellationToken.None);
                             var total = audio + articles + radio + mags + issues;
-                            await bot.SendMessage(chatId,
+                            var doneMsg = await bot.SendMessage(chatId,
                                 $"✅ Импорт завершён за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
                                 $"🎧 Аудио: +{audio}\n📰 Статьи: +{articles}\n" +
                                 $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}\n" +
                                 $"📰 Выпуски: +{issues}\n\n" +
                                 $"Итого новых: {total}",
                                 cancellationToken: CancellationToken.None);
+                            _lastBotMsg[chatId] = doneMsg.MessageId;
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "[Import] Ошибка");
-                            await bot.SendMessage(chatId, $"❌ Импорт упал: {ex.Message}",
+                            var errMsg = await bot.SendMessage(chatId, $"❌ Импорт упал: {ex.Message}",
                                 cancellationToken: CancellationToken.None);
+                            _lastBotMsg[chatId] = errMsg.MessageId;
                         }
                     }, CancellationToken.None);
                     return;
@@ -251,14 +264,16 @@ public class MessageHandler
                         reply = "Укажи ссылку после команды:\n<code>/addbook https://lio-int.com/knigi/название</code>";
                     else
                     {
-                        await bot.SendMessage(chatId, "Загружаю книгу по ссылке... ⏳", cancellationToken: ct);
+                        var tmp = await bot.SendMessage(chatId, "Загружаю книгу по ссылке... ⏳", cancellationToken: ct);
+                        tempMsgId = tmp.MessageId;
                         reply = await _bookService.AddBookFromUrlAsync(url);
                     }
                 }
             }
             else if (IsBookRequest(text))
             {
-                await bot.SendMessage(chatId, "Ищу подходящие книги... 📖", cancellationToken: ct);
+                var tmp = await bot.SendMessage(chatId, "Ищу подходящие книги... 📖", cancellationToken: ct);
+                tempMsgId = tmp.MessageId;
                 var history = _db.GetHistory(telegramUser.Id, limit: 10);
                 var result  = await _bookService.RecommendBooksAsync(text, history, telegramUser.Id);
                 reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
@@ -276,7 +291,11 @@ public class MessageHandler
                 _db.SaveMessage(telegramUser.Id, "assistant", reply);
             }
 
-            await SendMessage(bot, chatId, reply, keyboard, ct);
+            if (tempMsgId.HasValue)
+                await TryDelete(bot, chatId, tempMsgId.Value, ct);
+
+            var sentId = await SendMessage(bot, chatId, reply, keyboard, ct);
+            _lastBotMsg[chatId] = sentId;
         }
         catch (Exception ex)
         {
@@ -297,6 +316,8 @@ public class MessageHandler
         var data      = query.Data ?? "";
 
         _logger.LogInformation("[Bot] Callback {User} -> {Data}", user.FirstName, data);
+
+        _lastBotMsg[chatId] = messageId;
 
         try
         {
@@ -1321,41 +1342,46 @@ public class MessageHandler
                     replyMarkup: keyboard,
                     linkPreviewOptions: new() { IsDisabled = true },
                     cancellationToken: ct);
+                _lastBotMsg[chatId] = oldMessageId;
                 return;
             }
             catch { /* старое сообщение / тот же контент / лимит — fall through */ }
         }
         await TryDelete(bot, chatId, oldMessageId, ct);
-        await SendMessage(bot, chatId, text, keyboard, ct);
+        var sentId = await SendMessage(bot, chatId, text, keyboard, ct);
+        _lastBotMsg[chatId] = sentId;
     }
 
-    private static async Task SendMessage(
+    private static async Task<int> SendMessage(
         ITelegramBotClient bot, long chatId, string text,
         InlineKeyboardMarkup? keyboard, CancellationToken ct)
     {
         const int MaxLen = 4000;
         if (text.Length <= MaxLen)
         {
-            await bot.SendMessage(chatId, text,
+            var msg = await bot.SendMessage(chatId, text,
                 parseMode: ParseMode.Html,
                 replyMarkup: keyboard,
                 linkPreviewOptions: new() { IsDisabled = true },
                 cancellationToken: ct);
-            return;
+            return msg.MessageId;
         }
 
         // Разбиваем на части по абзацам
         var chunks = SplitIntoChunks(text, MaxLen);
+        int lastId = 0;
         for (var i = 0; i < chunks.Count; i++)
         {
             var isLast = i == chunks.Count - 1;
-            await bot.SendMessage(chatId, chunks[i],
+            var msg = await bot.SendMessage(chatId, chunks[i],
                 parseMode: ParseMode.Html,
                 replyMarkup: isLast ? keyboard : null,
                 linkPreviewOptions: new() { IsDisabled = true },
                 cancellationToken: ct);
+            lastId = msg.MessageId;
             if (!isLast) await Task.Delay(200, ct);
         }
+        return lastId;
     }
 
     private static List<string> SplitIntoChunks(string text, int maxLen)
