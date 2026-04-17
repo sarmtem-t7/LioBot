@@ -204,7 +204,7 @@ public class MessageHandler
                         try
                         {
                             var sw = System.Diagnostics.Stopwatch.StartNew();
-                            int audio = 0, articles = 0, radio = 0, mags = 0;
+                            int audio = 0, articles = 0, radio = 0, mags = 0, issues = 0;
                             switch (arg)
                             {
                                 case "audio":     audio    = await _importer.ImportAudiobooksAsync(); break;
@@ -215,13 +215,17 @@ public class MessageHandler
                                     var summary = await _importer.ImportAllAsync();
                                     audio = summary.Audio; articles = summary.Articles;
                                     radio = summary.Radio; mags = summary.Magazines;
+                                    issues = summary.Issues;
                                     break;
                             }
                             sw.Stop();
+                            var total = audio + articles + radio + mags + issues;
                             await bot.SendMessage(chatId,
                                 $"✅ Импорт завершён за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
                                 $"🎧 Аудио: +{audio}\n📰 Статьи: +{articles}\n" +
-                                $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}",
+                                $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}\n" +
+                                $"📰 Выпуски: +{issues}\n\n" +
+                                $"Итого новых: {total}",
                                 cancellationToken: CancellationToken.None);
                         }
                         catch (Exception ex)
