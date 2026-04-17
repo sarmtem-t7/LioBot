@@ -147,21 +147,32 @@ public class BookService
         var historyContext = BuildHistoryContext(history);
         var stems = ExtractStems(userRequest + " " + historyContext);
 
-        var candidates = allBooks
-            .Where(b => !excludeIds.Contains(b.Id))
-            .Select(b => new { Book = b, Score = ScoreBook(b, stems) })
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            .Take(25)
-            .Select(x => x.Book)
-            .ToList();
+        // Берём топ-кандидатов по каждому типу отдельно, чтобы AI всегда
+        // видел представителей всех форматов и мог предложить микс.
+        List<Book> TopByType(IEnumerable<Book> source, string type, int limit)
+        {
+            var typed = source.Where(b => b.Type == type && !excludeIds.Contains(b.Id)).ToList();
+            var scored = typed
+                .Select(b => new { Book = b, Score = ScoreBook(b, stems) })
+                .OrderByDescending(x => x.Score)
+                .Take(limit)
+                .Select(x => x.Book)
+                .ToList();
+            // Если ни один не подошёл по запросу — добавляем случайные данного типа
+            if (scored.Count == 0 || scored.All(b => ScoreBook(b, stems) == 0))
+                scored = typed.OrderBy(_ => Guid.NewGuid()).Take(limit / 2 + 1).ToList();
+            return scored;
+        }
+
+        var available = allBooks.Where(b => !excludeIds.Contains(b.Id)).ToList();
+        var candidates = new List<Book>();
+        candidates.AddRange(TopByType(available, "book",    5));
+        candidates.AddRange(TopByType(available, "audio",   4));
+        candidates.AddRange(TopByType(available, "article", 4));
+        candidates.AddRange(TopByType(available, "radio",   3));
 
         if (candidates.Count == 0)
-            candidates = allBooks.Where(b => !excludeIds.Contains(b.Id))
-                .OrderBy(_ => Guid.NewGuid()).Take(15).ToList();
-
-        if (candidates.Count == 0)
-            candidates = allBooks.OrderBy(_ => Guid.NewGuid()).Take(10).ToList();
+            candidates = available.OrderBy(_ => Guid.NewGuid()).Take(16).ToList();
 
         List<Book> selectedBooks;
         Dictionary<long, string> comments = new();
@@ -174,13 +185,14 @@ public class BookService
                 $"\nИзбегай материалов, похожих на те, что пользователь низко оценил (ID: {string.Join(",", lowRated)}).";
 
             var systemMsg = """
-                Ты помощник христианского контент-хаба. Подбираешь материалы из каталога: книги, аудиокниги, статьи, журналы, радио.
-                Выбери 2 материала из списка, подходящих к запросу пользователя. По возможности — РАЗНЫХ форматов
-                (например, книга + статья или аудиокнига + радио), если это уместно по теме.
+                Ты помощник христианского контент-хаба. Подбираешь материалы из каталога: книги, аудиокниги, статьи, радио.
+                Выбери РОВНО 2 материала РАЗНЫХ форматов (один — книга или аудиокнига, другой — статья или радио),
+                подходящих к запросу пользователя. Если в каталоге только один формат — выбери два лучших.
+                В комментарии к ПЕРВОМУ материалу можно кратко упомянуть, как он дополняет второй.
                 Ответ — ТОЛЬКО JSON-массив объектов строго такого формата:
-                [{"id": 12, "comment": "короткий комментарий почему этот материал подходит"},
+                [{"id": 12, "comment": "короткий комментарий почему подходит и как связан со вторым"},
                  {"id": 47, "comment": "..."}]
-                Комментарий — 1-2 предложения, тёплый тон, без воды. Никакого текста вне JSON.
+                Комментарий — 1-2 предложения, тёплый живой тон. Никакого текста вне JSON.
                 """;
 
             var userMsg = $"Каталог материалов:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
