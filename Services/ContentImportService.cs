@@ -107,9 +107,9 @@ public class ContentImportService
     }
 
     // Парсит обложки выпусков из CDN-ссылок на страницах журналов.
-    // Формат файлов: "2025 Вера и Жизнь - 3 a.jpg", "2024 Тропинка - 1a.jpg"
+    // Формат файлов (после декодирования): "2025 Вера и Жизнь - 3 a.jpg"
     private static readonly Regex IssueFileRe = new(
-        @"(\d{4})\+([^/]+?)\+?-\+?(\d+)\s*a\.(jpg|png)",
+        @"(\d{4})\s+.+?\s*-\s*(\d+)\s*a\w?\.(jpg|png)",
         RegexOptions.IgnoreCase);
 
     public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)
@@ -134,11 +134,11 @@ public class ContentImportService
             {
                 var imgUrl = m.Value;
                 var decoded = System.Net.WebUtility.UrlDecode(imgUrl.Replace('+', ' '));
-                var fileMatch = IssueFileRe.Match(imgUrl);
+                var fileMatch = IssueFileRe.Match(decoded);
                 if (!fileMatch.Success) continue;
 
                 var year = fileMatch.Groups[1].Value;
-                var number = fileMatch.Groups[3].Value;
+                var number = fileMatch.Groups[2].Value;
                 var title = $"{year} №{number}";
                 if (!seen.Add(title)) continue;
                 if (_db.MagazineIssueExists(magId.Value, title)) continue;
