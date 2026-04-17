@@ -410,7 +410,9 @@ public class MessageHandler
             {
                 _db.MarkBookAsRead(user.Id, readId);
                 _db.StopReading(user.Id, readId);
-                await bot.AnswerCallbackQuery(query.Id, "✅ Добавлено в список прочитанных!", cancellationToken: ct);
+                var readBook = _bookService.GetBookById(readId);
+                var doneVerb = readBook?.Type is "audio" or "radio" ? "прослушанных" : "прочитанных";
+                await bot.AnswerCallbackQuery(query.Id, $"✅ Добавлено в список {doneVerb}!", cancellationToken: ct);
 
                 var existingRating = _db.GetRating(user.Id, readId);
                 if (existingRating is null)
@@ -469,7 +471,9 @@ public class MessageHandler
             if (data.StartsWith("book:reading:") && long.TryParse(data[13..], out var readingId))
             {
                 _db.MarkBookAsReading(user.Id, readingId);
-                await bot.AnswerCallbackQuery(query.Id, "📖 Добавлено в «Сейчас читаю»", cancellationToken: ct);
+                var rdBook = _bookService.GetBookById(readingId);
+                var inProgressLabel = rdBook?.Type is "audio" or "radio" ? "Сейчас слушаю" : "Сейчас читаю";
+                await bot.AnswerCallbackQuery(query.Id, $"📖 Добавлено в «{inProgressLabel}»", cancellationToken: ct);
                 return;
             }
 
@@ -486,7 +490,7 @@ public class MessageHandler
             {
                 _db.MarkBookAsIgnored(user.Id, ignoreId);
                 _db.MarkBooksAsSeen(user.Id, [ignoreId]);
-                await bot.AnswerCallbackQuery(query.Id, "❌ Книга скрыта из рекомендаций", cancellationToken: ct);
+                await bot.AnswerCallbackQuery(query.Id, "❌ Скрыто из рекомендаций", cancellationToken: ct);
                 return;
             }
 
@@ -1142,15 +1146,16 @@ public class MessageHandler
         {
             var book = books[i];
             var n    = i + 1;
+            var doneLabel = book.Type is "audio" or "radio" ? "Прослушал" : "Прочитал";
             rows.Add([
-                InlineKeyboardButton.WithCallbackData($"📝 Подробнее о кн.{n}", $"book:annotate:{book.Id}")
+                InlineKeyboardButton.WithCallbackData($"📝 Подробнее #{n}", $"book:annotate:{book.Id}")
             ]);
             rows.Add([
-                InlineKeyboardButton.WithCallbackData($"✅ Прочитал кн.{n}",  $"book:read:{book.Id}"),
-                InlineKeyboardButton.WithCallbackData($"❌ Скрыть кн.{n}",    $"book:ignore:{book.Id}")
+                InlineKeyboardButton.WithCallbackData($"✅ {doneLabel} #{n}", $"book:read:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData($"❌ Скрыть #{n}",      $"book:ignore:{book.Id}")
             ]);
         }
-        rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другие книги", "recommend:more")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другие варианты", "recommend:more")]);
         rows.Add([
             InlineKeyboardButton.WithCallbackData("📋 Каталог",    "catalog:all:0"),
             HomeButton()
@@ -1158,18 +1163,27 @@ public class MessageHandler
         return new InlineKeyboardMarkup(rows);
     }
 
+    private static (string Done, string InProgress, string Pause, string Link) ActionLabels(string? type) => type switch
+    {
+        "audio" => ("✅ Прослушал", "🎧 Слушаю", "⏸ Отложить", "🎧 Слушать"),
+        "article" => ("✅ Прочитал", "📰 Читаю", "⏸ Отложить", "📰 Читать"),
+        "radio" => ("✅ Прослушал", "🎙 Слушаю", "⏸ Отложить", "🎙 Слушать"),
+        _ => ("✅ Прочитал", "📖 Читаю", "⏸ Отложить", "📖 Читать"),
+    };
+
     private InlineKeyboardMarkup BookCardKeyboard(Book book, long telegramId = 0)
     {
+        var labels = ActionLabels(book.Type);
         var reading = telegramId > 0 && _db.GetReadingNow(telegramId).Any(b => b.Id == book.Id);
         var readingBtn = reading
-            ? InlineKeyboardButton.WithCallbackData("⏸ Отложить",  $"book:stopreading:{book.Id}")
-            : InlineKeyboardButton.WithCallbackData("📖 Читаю",     $"book:reading:{book.Id}");
+            ? InlineKeyboardButton.WithCallbackData(labels.Pause,      $"book:stopreading:{book.Id}")
+            : InlineKeyboardButton.WithCallbackData(labels.InProgress, $"book:reading:{book.Id}");
 
         var rows = new List<InlineKeyboardButton[]>
         {
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("✅ Прочитал",   $"book:read:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData(labels.Done, $"book:read:{book.Id}"),
                 readingBtn
             },
             new[]
@@ -1179,10 +1193,7 @@ public class MessageHandler
             }
         };
         if (!string.IsNullOrEmpty(book.Url))
-        {
-            var linkLabel = book.Type == "audio" ? "🎧 Слушать" : "📖 Читать";
-            rows.Add([InlineKeyboardButton.WithUrl(linkLabel, book.Url)]);
-        }
+            rows.Add([InlineKeyboardButton.WithUrl(labels.Link, book.Url)]);
         rows.Add([
             InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0"),
             HomeButton()
@@ -1456,16 +1467,14 @@ public class MessageHandler
     private static string BuildHelpMessage() => """
         📖 <b>Что умеет Лио:</b>
 
-        • Напиши своим словами что тебя волнует — подберу книгу
+        • Напиши своим словами что тебя волнует — подберу материал
         • <b>По теме</b> — быстрый выбор: молитва, семья, трудности…
-        • <b>Каталог</b> — все книги и аудио с фильтрами
-        • <b>Книга дня</b> — одна книга каждый день
-        • <b>Мои книги</b> — что читаю сейчас и что уже прочитал (с оценками)
+        • <b>Каталог</b> — книги, аудио, статьи, радио
+        • <b>Мои материалы</b> — что сейчас читаю/слушаю и что завершил
         • <b>Рассылка</b> — утреннее вдохновение: ежедневно, раз в неделю или выключить
-        • В карточке книги: «📝 Полная аннотация» / «📖 Читаю» / «✅ Прочитал» / «⭐ Оценить»
+        • В карточке: «📝 Подробнее» / «📖 Читаю» или «🎧 Слушаю» / «✅ Прочитал/Прослушал»
         • <b>Профиль</b> — сменить этап веры или интересы в любой момент
         • <code>/search молитва</code> — прямой поиск по слову
-        • <code>/addbook URL</code> — добавить книгу (администраторы)
         • @LioBot <i>запрос</i> — поиск прямо из любого чата (inline)
         """;
 
@@ -1476,7 +1485,7 @@ public class MessageHandler
         var ratings = _db.GetRatingsMap(telegramId);
 
         if (reading.Count == 0 && read.Count == 0)
-            return "У тебя пока нет материалов в списке.\n\nВ карточке материала нажми «📖 Читаю» чтобы начать, или «✅ Прочитал» когда закончишь.";
+            return "У тебя пока нет материалов в списке.\n\nВ карточке нажми «📖 Читаю» / «🎧 Слушаю», или «✅ Прочитал» / «✅ Прослушал» когда закончишь.";
 
         var sb = new System.Text.StringBuilder();
 
