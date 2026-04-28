@@ -24,7 +24,6 @@ public class MessageHandler
 
     private const int CatalogPageSize = 8;
 
-    private static readonly ConcurrentDictionary<long, int> _lastBotMsg = new();
 
     // Быстрые темы для подбора книг
     private static readonly (string Label, string Tag)[] QuickTopics =
@@ -115,8 +114,8 @@ public class MessageHandler
 
         try
         {
-            if (_lastBotMsg.TryRemove(chatId, out var prevMsgId))
-                await TryDelete(bot, chatId, prevMsgId, ct);
+            foreach (var id in BotMessageTracker.TakeAll(chatId))
+                await TryDelete(bot, chatId, id, ct);
 
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
             var readDelay = Math.Clamp(text.Length * 30, 600, 2500);
@@ -207,7 +206,7 @@ public class MessageHandler
                     var startMsg = await bot.SendMessage(chatId,
                         "🔄 Запускаю импорт. Это займёт от пары минут до получаса — отвечу, когда закончу.",
                         cancellationToken: ct);
-                    _lastBotMsg[chatId] = startMsg.MessageId;
+                    BotMessageTracker.Track(chatId, startMsg.MessageId);
                     _ = Task.Run(async () =>
                     {
                         try
@@ -228,7 +227,7 @@ public class MessageHandler
                                     break;
                             }
                             sw.Stop();
-                            if (_lastBotMsg.TryRemove(chatId, out var oldId))
+                            foreach (var oldId in BotMessageTracker.TakeAll(chatId))
                                 await TryDelete(bot, chatId, oldId, CancellationToken.None);
                             var total = audio + articles + radio + mags + issues;
                             var doneMsg = await bot.SendMessage(chatId,
@@ -238,14 +237,14 @@ public class MessageHandler
                                 $"📰 Выпуски: +{issues}\n\n" +
                                 $"Итого новых: {total}",
                                 cancellationToken: CancellationToken.None);
-                            _lastBotMsg[chatId] = doneMsg.MessageId;
+                            BotMessageTracker.Track(chatId, doneMsg.MessageId);
                         }
                         catch (Exception ex)
                         {
                             _logger.LogError(ex, "[Import] Ошибка");
                             var errMsg = await bot.SendMessage(chatId, $"❌ Импорт упал: {ex.Message}",
                                 cancellationToken: CancellationToken.None);
-                            _lastBotMsg[chatId] = errMsg.MessageId;
+                            BotMessageTracker.Track(chatId, errMsg.MessageId);
                         }
                     }, CancellationToken.None);
                     return;
@@ -295,7 +294,7 @@ public class MessageHandler
                 await TryDelete(bot, chatId, tempMsgId.Value, ct);
 
             var sentId = await SendMessage(bot, chatId, reply, keyboard, ct);
-            _lastBotMsg[chatId] = sentId;
+            BotMessageTracker.Track(chatId, sentId);
         }
         catch (Exception ex)
         {
@@ -317,7 +316,7 @@ public class MessageHandler
 
         _logger.LogInformation("[Bot] Callback {User} -> {Data}", user.FirstName, data);
 
-        _lastBotMsg[chatId] = messageId;
+        BotMessageTracker.SetCurrent(chatId, messageId);
 
         try
         {
@@ -1353,14 +1352,14 @@ public class MessageHandler
                     replyMarkup: keyboard,
                     linkPreviewOptions: new() { IsDisabled = true },
                     cancellationToken: ct);
-                _lastBotMsg[chatId] = oldMessageId;
+                BotMessageTracker.SetCurrent(chatId, oldMessageId);
                 return;
             }
             catch { /* старое сообщение / тот же контент / лимит — fall through */ }
         }
         await TryDelete(bot, chatId, oldMessageId, ct);
         var sentId = await SendMessage(bot, chatId, text, keyboard, ct);
-        _lastBotMsg[chatId] = sentId;
+        BotMessageTracker.SetCurrent(chatId, sentId);
     }
 
     private static async Task<int> SendMessage(

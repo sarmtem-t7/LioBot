@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using LioBot.Data;
+using LioBot.Models;
 using LioBot.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -57,9 +58,8 @@ public class MorningMessageJob : IJob
         var isMonday   = dow == DayOfWeek.Monday;
 
         string? genericMessage = null;
-        // Рекомендация по дню недели — общая для всех на сегодня.
-        // Считаем один раз, не дёргаем БД для каждого юзера.
-        var contentTip = BuildContentOfTheDay(dow, dayOfYear);
+        var articleOfDay = PickArticleOfTheDay(dayOfYear);
+        string? sundayWord = dow == DayOfWeek.Sunday ? await GenerateSundayWordAsync(dayOfYear) : null;
 
         var users = _db.GetAllUsers();
         _logger.LogInformation("[Scheduler] Всего пользователей: {Count}", users.Count);
@@ -91,12 +91,25 @@ public class MorningMessageJob : IJob
                     message = genericMessage;
                 }
 
-                if (!string.IsNullOrEmpty(contentTip))
-                    message = message.TrimEnd() + "\n\n" + contentTip;
+                if (!string.IsNullOrEmpty(sundayWord))
+                    message = message.TrimEnd() + "\n\n⛪ <b>Слово перед служением:</b>\n" + sundayWord;
 
-                await _bot.SendMessage(user.TelegramId, message,
+                var greetingMsg = await _bot.SendMessage(user.TelegramId, message,
                     parseMode: ParseMode.Html,
                     linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
+                BotMessageTracker.Track(user.TelegramId, greetingMsg.MessageId);
+
+                if (articleOfDay != null)
+                {
+                    await Task.Delay(200);
+                    var (cardText, cardKeyboard) = BuildArticleCard(articleOfDay);
+                    var articleMsg = await _bot.SendMessage(user.TelegramId,
+                        "📰 <b>Статья дня:</b>\n\n" + cardText,
+                        parseMode: ParseMode.Html,
+                        replyMarkup: cardKeyboard,
+                        linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
+                    BotMessageTracker.Track(user.TelegramId, articleMsg.MessageId);
+                }
 
                 var verseRef = ExtractVerseRef(message);
                 if (!string.IsNullOrEmpty(verseRef))
@@ -123,35 +136,62 @@ public class MorningMessageJob : IJob
         _logger.LogInformation("[Scheduler] Рассылка завершена. Отправлено: {Sent}, заблокировано: {Blocked}", sent, blocked);
     }
 
-    // Возвращает HTML-строку с рекомендацией дня по типу контента.
-    // По вторникам и пятницам — пусто (только стих, как раньше).
-    private string BuildContentOfTheDay(DayOfWeek dow, int dayOfYear)
+    private Book? PickArticleOfTheDay(int dayOfYear)
     {
-        var (type, label) = dow switch
-        {
-            DayOfWeek.Monday    => ("article",  "📰 Статья дня"),
-            DayOfWeek.Wednesday => ("radio",    "🎙 Радио дня"),
-            DayOfWeek.Thursday  => ("magazine", "📖 Журнал дня"),
-            DayOfWeek.Saturday  => ("audio",    "🎧 Аудиокнига дня"),
-            DayOfWeek.Sunday    => ("book",     "📚 Книга недели"),
-            _                   => ("",         "")
-        };
-        if (type == "") return "";
-
-        var items = _db.GetByType(type);
-        if (items.Count == 0) return "";
-        var pick = items[dayOfYear % items.Count];
-
-        var line = $"<b>{label}:</b> «{Escape(pick.Title)}»";
-        if (!string.IsNullOrWhiteSpace(pick.Author))
-            line += $" — {Escape(pick.Author)}";
-        if (!string.IsNullOrEmpty(pick.Url))
-            line += $"\n<a href=\"{pick.Url}\">→ {BookService.LinkLabelFor(pick.Type)}</a>";
-        return line;
+        var items = _db.GetByType("article");
+        return items.Count == 0 ? null : items[dayOfYear % items.Count];
     }
 
-    private static string Escape(string s) =>
-        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+    private static (string Text, InlineKeyboardMarkup Keyboard) BuildArticleCard(Book article)
+    {
+        var text = BookService.FormatBookCard(article);
+
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("✅ Прочитал",  $"book:read:{article.Id}"),
+                InlineKeyboardButton.WithCallbackData("📰 Читаю",    $"book:reading:{article.Id}")
+            }
+        };
+        if (!string.IsNullOrEmpty(article.Url))
+            rows.Add([InlineKeyboardButton.WithUrl("📰 Читать статью", article.Url)]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("🏠 На главную", "menu:back")]);
+
+        return (text, new InlineKeyboardMarkup(rows));
+    }
+
+    private static readonly string[] FallbackSundayWords =
+    {
+        "«Как хорошо и как приятно жить братьям вместе!» (Псалом 132:1). Войдите в дом Господень с открытым сердцем — пусть сегодняшнее служение станет живой встречей с Богом.",
+        "Сегодня день собрания. Приходите не как зрители, но как участники — Господь посреди вас. Благословенного воскресного служения!",
+        "«Не будем оставлять собрания своего» (Евреям 10:25). Каждое воскресенье — это дар. Пусть сегодня Его слово коснётся вашего сердца.",
+        "Воскресное служение — это не ритуал, это встреча. Приходите с ожиданием, и Господь не оставит вас без ответа.",
+    };
+
+    private async Task<string> GenerateSundayWordAsync(int dayOfYear)
+    {
+        var system = """
+            Ты — тёплый помощник христианского книжного клуба LioBot.
+            Сегодня воскресенье. Напиши короткое слово наставления перед воскресным служением.
+            Правила:
+            1. Пиши только на русском языке.
+            2. Тон — тёплый, пасторский, вдохновляющий.
+            3. Включи 1 библейский стих по Синодальному переводу, связанный с поклонением, собранием или служением.
+               Ссылку оформляй в круглых скобках: «текст» (Книга Глава:Стих).
+            4. Максимум 3-4 предложения. Не начинай с "Доброе утро!".
+            5. Пожелай благословенного воскресного служения.
+            """;
+        try
+        {
+            return await _claude.AskAsync(system,
+                $"День года: {dayOfYear}. Напиши уникальное слово наставления перед воскресным служением.", maxTokens: 300);
+        }
+        catch
+        {
+            return FallbackSundayWords[dayOfYear % FallbackSundayWords.Length];
+        }
+    }
 
     private string PickFallbackVerse(int dayOfYear, string firstName)
     {
