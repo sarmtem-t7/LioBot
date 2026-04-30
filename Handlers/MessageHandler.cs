@@ -114,7 +114,13 @@ public class MessageHandler
 
         try
         {
-            foreach (var id in BotMessageTracker.TakeAll(chatId))
+            // Удаляем все известные сообщения бота + брутфорс по диапазону
+            // (чтобы не зависеть от in-memory трекера, который сбрасывается при рестарте)
+            var userMsgId = message.MessageId;
+            var tracked = BotMessageTracker.TakeAll(chatId);
+            var idsToDelete = new HashSet<int>(tracked);
+            for (var i = 1; i <= 60; i++) idsToDelete.Add(userMsgId - i);
+            foreach (var id in idsToDelete)
                 await TryDelete(bot, chatId, id, ct);
 
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
