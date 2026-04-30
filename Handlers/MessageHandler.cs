@@ -1134,13 +1134,11 @@ public class MessageHandler
         new[]
         {
             InlineKeyboardButton.WithCallbackData("🎙 Радио",   "catalog:radio:0"),
-            InlineKeyboardButton.WithCallbackData("📖 Журналы", "magazines:list"),
-            InlineKeyboardButton.WithCallbackData("🎲 Случайное","book:random")
+            InlineKeyboardButton.WithCallbackData("📖 Журналы", "magazines:list")
         },
-        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",     "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("👤 Авторы",       "authors:0") },
-        new[] { InlineKeyboardButton.WithCallbackData("📌 Мои материалы","menu:mybooks"),
-                InlineKeyboardButton.WithCallbackData("⚙️ Профиль",      "menu:profile") },
+        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",  "menu:topics"),
+                InlineKeyboardButton.WithCallbackData("👤 Авторы", "authors:0") },
+        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль", "menu:profile") },
         new[] { InlineKeyboardButton.WithCallbackData("🔔 Рассылка",     "menu:notifications") }
     });
 
