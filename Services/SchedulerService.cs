@@ -146,14 +146,7 @@ public class MorningMessageJob : IJob
     {
         var text = BookService.FormatBookCard(article);
 
-        var rows = new List<InlineKeyboardButton[]>
-        {
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("✅ Прочитал",  $"book:read:{article.Id}"),
-                InlineKeyboardButton.WithCallbackData("📰 Читаю",    $"book:reading:{article.Id}")
-            }
-        };
+        var rows = new List<InlineKeyboardButton[]>();
         if (!string.IsNullOrEmpty(article.Url))
             rows.Add([InlineKeyboardButton.WithUrl("📰 Читать статью", article.Url)]);
         rows.Add([InlineKeyboardButton.WithCallbackData("🏠 На главную", "menu:back")]);

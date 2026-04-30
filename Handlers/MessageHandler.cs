@@ -1149,13 +1149,9 @@ public class MessageHandler
         {
             var book = books[i];
             var n    = i + 1;
-            var doneLabel = book.Type is "audio" or "radio" ? "Прослушал" : "Прочитал";
             rows.Add([
-                InlineKeyboardButton.WithCallbackData($"📝 Подробнее #{n}", $"book:annotate:{book.Id}")
-            ]);
-            rows.Add([
-                InlineKeyboardButton.WithCallbackData($"✅ {doneLabel} #{n}", $"book:read:{book.Id}"),
-                InlineKeyboardButton.WithCallbackData($"❌ Скрыть #{n}",      $"book:ignore:{book.Id}")
+                InlineKeyboardButton.WithCallbackData($"📝 Подробнее #{n}", $"book:annotate:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData($"❌ Скрыть #{n}",    $"book:ignore:{book.Id}")
             ]);
         }
         rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другие варианты", "recommend:more")]);
@@ -1177,22 +1173,13 @@ public class MessageHandler
     private InlineKeyboardMarkup BookCardKeyboard(Book book, long telegramId = 0)
     {
         var labels = ActionLabels(book.Type);
-        var reading = telegramId > 0 && _db.GetReadingNow(telegramId).Any(b => b.Id == book.Id);
-        var readingBtn = reading
-            ? InlineKeyboardButton.WithCallbackData(labels.Pause,      $"book:stopreading:{book.Id}")
-            : InlineKeyboardButton.WithCallbackData(labels.InProgress, $"book:reading:{book.Id}");
 
         var rows = new List<InlineKeyboardButton[]>
         {
             new[]
             {
-                InlineKeyboardButton.WithCallbackData(labels.Done, $"book:read:{book.Id}"),
-                readingBtn
-            },
-            new[]
-            {
-                InlineKeyboardButton.WithCallbackData("🔍 Похожие",    $"book:similar:{book.Id}"),
-                InlineKeyboardButton.WithCallbackData("❌ Скрыть",     $"book:ignore:{book.Id}")
+                InlineKeyboardButton.WithCallbackData("🔍 Похожие", $"book:similar:{book.Id}"),
+                InlineKeyboardButton.WithCallbackData("❌ Скрыть",  $"book:ignore:{book.Id}")
             }
         };
         if (!string.IsNullOrEmpty(book.Url))
