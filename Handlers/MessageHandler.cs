@@ -1137,7 +1137,7 @@ public class MessageHandler
             InlineKeyboardButton.WithCallbackData("📖 Журналы", "magazines:list"),
             InlineKeyboardButton.WithCallbackData("🎲 Случайное","book:random")
         },
-        new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",     "menu:topics"),
+        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",     "menu:topics"),
                 InlineKeyboardButton.WithCallbackData("👤 Авторы",       "authors:0") },
         new[] { InlineKeyboardButton.WithCallbackData("📌 Мои материалы","menu:mybooks"),
                 InlineKeyboardButton.WithCallbackData("⚙️ Профиль",      "menu:profile") },
@@ -1324,7 +1324,7 @@ public class MessageHandler
     private static InlineKeyboardMarkup QuickActionsKeyboard() => new(new[]
     {
         new[] { InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend") },
-        new[] { InlineKeyboardButton.WithCallbackData("🏷️ По теме",        "menu:topics"),
+        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",        "menu:topics"),
                 InlineKeyboardButton.WithCallbackData("📋 Каталог",         "menu:catalog") },
         new[] { HomeButton() }
     });
@@ -1473,7 +1473,7 @@ public class MessageHandler
         📖 <b>Что умеет Лио:</b>
 
         • Напиши своим словами что тебя волнует — подберу материал
-        • <b>По теме</b> — быстрый выбор: молитва, семья, трудности…
+        • <b>Поиск</b> — быстрый выбор: молитва, семья, трудности…
         • <b>Каталог</b> — книги, аудио, статьи, радио
         • <b>Мои материалы</b> — что сейчас читаю/слушаю и что завершил
         • <b>Рассылка</b> — утреннее вдохновение: ежедневно, раз в неделю или выключить
