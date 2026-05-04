@@ -57,6 +57,13 @@ var db = host.Services.GetRequiredService<DatabaseContext>();
 db.Initialize();
 LioBot.Data.BookSeeder.SeedIfEmpty(db);
 
+// Персистим последний bot-message ID, чтобы утренняя рассылка могла
+// редактировать прошлое сообщение даже после рестарта процесса.
+LioBot.Services.BotMessageTracker.OnPersistLast = (tid, mid) =>
+{
+    try { db.SetLastBotMessageId(tid, mid); } catch { /* not critical */ }
+};
+
 await host.RunAsync();
 
 // ============================================================

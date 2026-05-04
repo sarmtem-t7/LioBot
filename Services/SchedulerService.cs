@@ -94,22 +94,43 @@ public class MorningMessageJob : IJob
                 if (!string.IsNullOrEmpty(sundayWord))
                     message = message.TrimEnd() + "\n\n⛪ <b>Слово перед служением:</b>\n" + sundayWord;
 
-                var greetingMsg = await _bot.SendMessage(user.TelegramId, message,
-                    parseMode: ParseMode.Html,
-                    linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
-                BotMessageTracker.Track(user.TelegramId, greetingMsg.MessageId);
-
                 if (articleOfDay != null)
+                    message = message.TrimEnd() + "\n\n📰 <b>Статья дня:</b>\n\n" + BookService.FormatBookCard(articleOfDay);
+
+                var keyboard = BuildMorningKeyboard(articleOfDay);
+                var linkPreview = new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true };
+                var lastId = _db.GetLastBotMessageId(user.TelegramId);
+
+                int sentMessageId;
+                if (lastId.HasValue)
                 {
-                    await Task.Delay(200);
-                    var (cardText, cardKeyboard) = BuildArticleCard(articleOfDay);
-                    var articleMsg = await _bot.SendMessage(user.TelegramId,
-                        "📰 <b>Статья дня:</b>\n\n" + cardText,
-                        parseMode: ParseMode.Html,
-                        replyMarkup: cardKeyboard,
-                        linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
-                    BotMessageTracker.Track(user.TelegramId, articleMsg.MessageId);
+                    try
+                    {
+                        var edited = await _bot.EditMessageText(user.TelegramId, lastId.Value, message,
+                            parseMode: ParseMode.Html,
+                            replyMarkup: keyboard,
+                            linkPreviewOptions: linkPreview);
+                        sentMessageId = edited.MessageId;
+                    }
+                    catch
+                    {
+                        // старое сообщение недоступно (>48ч / удалено / тот же контент) — шлём новое
+                        var fresh = await _bot.SendMessage(user.TelegramId, message,
+                            parseMode: ParseMode.Html,
+                            replyMarkup: keyboard,
+                            linkPreviewOptions: linkPreview);
+                        sentMessageId = fresh.MessageId;
+                    }
                 }
+                else
+                {
+                    var fresh = await _bot.SendMessage(user.TelegramId, message,
+                        parseMode: ParseMode.Html,
+                        replyMarkup: keyboard,
+                        linkPreviewOptions: linkPreview);
+                    sentMessageId = fresh.MessageId;
+                }
+                BotMessageTracker.SetCurrent(user.TelegramId, sentMessageId);
 
                 var verseRef = ExtractVerseRef(message);
                 if (!string.IsNullOrEmpty(verseRef))
@@ -142,16 +163,13 @@ public class MorningMessageJob : IJob
         return items.Count == 0 ? null : items[dayOfYear % items.Count];
     }
 
-    private static (string Text, InlineKeyboardMarkup Keyboard) BuildArticleCard(Book article)
+    private static InlineKeyboardMarkup BuildMorningKeyboard(Book? article)
     {
-        var text = BookService.FormatBookCard(article);
-
         var rows = new List<InlineKeyboardButton[]>();
-        if (!string.IsNullOrEmpty(article.Url))
+        if (article != null && !string.IsNullOrEmpty(article.Url))
             rows.Add([InlineKeyboardButton.WithUrl("📰 Читать статью", article.Url)]);
         rows.Add([InlineKeyboardButton.WithCallbackData("🏠 На главную", "menu:back")]);
-
-        return (text, new InlineKeyboardMarkup(rows));
+        return new InlineKeyboardMarkup(rows);
     }
 
     private static readonly string[] FallbackSundayWords =

@@ -63,7 +63,8 @@ public partial class DatabaseContext
             // Унифицированный контент: audio, журналы, дата публикации
             "ALTER TABLE Books ADD COLUMN AudioUrl TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE Books ADD COLUMN IssueId INTEGER",
-            "ALTER TABLE Books ADD COLUMN ReleasedAt TEXT"
+            "ALTER TABLE Books ADD COLUMN ReleasedAt TEXT",
+            "ALTER TABLE Users ADD COLUMN LastBotMessageId INTEGER"
         })
         {
             cmd.CommandText = migration;
@@ -326,6 +327,29 @@ public partial class DatabaseContext
         var list = new List<User>();
         while (reader.Read()) list.Add(MapUser(reader));
         return list;
+    }
+
+    public void SetLastBotMessageId(long telegramId, int messageId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Users SET LastBotMessageId = $mid WHERE TelegramId = $tid";
+        cmd.Parameters.AddWithValue("$mid", messageId);
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public int? GetLastBotMessageId(long telegramId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT LastBotMessageId FROM Users WHERE TelegramId = $tid";
+        cmd.Parameters.AddWithValue("$tid", telegramId);
+        var result = cmd.ExecuteScalar();
+        if (result is null || result is DBNull) return null;
+        return Convert.ToInt32(result);
     }
 
     public void MarkOnboardingDone(long telegramId)
