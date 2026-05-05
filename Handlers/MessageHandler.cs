@@ -24,6 +24,34 @@ public class MessageHandler
 
     private const int CatalogPageSize = 8;
 
+    // Постоянная reply-клавиатура снизу — главная навигация по разделам.
+    // Inline-кнопки остаются только для действий внутри карточки и пагинации.
+    private const string NavBooks     = "📖 Книги";
+    private const string NavAudio     = "🎧 Аудио";
+    private const string NavArticles  = "📰 Статьи";
+    private const string NavRadio     = "🎙 Радио";
+    private const string NavMagazines = "📔 Журналы";
+    private const string NavAuthors   = "👤 Авторы";
+    private const string NavPick      = "🤖 Подбери";
+    private const string NavProfile   = "📊 Профиль";
+
+    private static readonly HashSet<string> NavButtons =
+    [
+        NavBooks, NavAudio, NavArticles, NavRadio,
+        NavMagazines, NavAuthors, NavPick, NavProfile
+    ];
+
+    private static ReplyKeyboardMarkup MainReplyKeyboard() => new(new[]
+    {
+        new[] { new KeyboardButton(NavBooks),     new KeyboardButton(NavAudio),     new KeyboardButton(NavArticles) },
+        new[] { new KeyboardButton(NavRadio),     new KeyboardButton(NavMagazines), new KeyboardButton(NavAuthors)  },
+        new[] { new KeyboardButton(NavPick),      new KeyboardButton(NavProfile) }
+    })
+    {
+        ResizeKeyboard = true,
+        IsPersistent   = true
+    };
+
 
     // Быстрые темы для подбора книг
     private static readonly (string Label, string Tag)[] QuickTopics =
@@ -143,7 +171,15 @@ public class MessageHandler
                 else
                 {
                     reply = BuildWelcomeMessage(telegramUser.FirstName);
-                    keyboard = MainMenuKeyboard();
+                    keyboard = null;
+                    // Перевыставляем reply-клавиатуру (на случай рестарта бота
+                    // или если пользователь свернул её)
+                    var welcomeMsg = await bot.SendMessage(chatId, reply,
+                        parseMode: ParseMode.Html,
+                        replyMarkup: MainReplyKeyboard(),
+                        cancellationToken: ct);
+                    BotMessageTracker.Track(chatId, welcomeMsg.MessageId);
+                    return;
                 }
             }
             else if (text.StartsWith("/onboarding"))
@@ -156,7 +192,6 @@ public class MessageHandler
                 if (_adminIds.Count == 0 || _adminIds.Contains(telegramUser.Id))
                 {
                     reply = BuildStatsMessage();
-                    keyboard = MainMenuKeyboard();
                 }
                 else
                 {
@@ -166,7 +201,6 @@ public class MessageHandler
             else if (text.StartsWith("/help"))
             {
                 reply = BuildHelpMessage();
-                keyboard = MainMenuKeyboard();
             }
             else if (text.StartsWith("/books"))
             {
@@ -176,7 +210,6 @@ public class MessageHandler
             else if (text.StartsWith("/mybooks"))
             {
                 reply = BuildMyBooksMessage(telegramUser.Id);
-                keyboard = MainMenuKeyboard();
             }
             else if (text.StartsWith("/notifications"))
             {
@@ -194,7 +227,6 @@ public class MessageHandler
             else if (text == "/search")
             {
                 reply = "Напиши что ищешь после команды:\n<code>/search молитва</code>\nили просто опиши ситуацию словами — я пойму.";
-                keyboard = MainMenuKeyboard();
             }
             else if (text.StartsWith("/import"))
             {
@@ -219,12 +251,16 @@ public class MessageHandler
                         {
                             var sw = System.Diagnostics.Stopwatch.StartNew();
                             int audio = 0, articles = 0, radio = 0, mags = 0, issues = 0;
+                            int coversUpdated = 0, coversScanned = 0;
                             switch (arg)
                             {
                                 case "audio":     audio    = await _importer.ImportAudiobooksAsync(); break;
                                 case "articles":  articles = await _importer.ImportArticlesAsync();   break;
                                 case "radio":     radio    = await _importer.ImportRadioAsync();      break;
                                 case "magazines": mags     = await _importer.ImportMagazinesAsync();  break;
+                                case "covers":
+                                    (coversUpdated, coversScanned) = await _importer.BackfillCoversAsync();
+                                    break;
                                 default:
                                     var summary = await _importer.ImportAllAsync();
                                     audio = summary.Audio; articles = summary.Articles;
@@ -236,12 +272,15 @@ public class MessageHandler
                             foreach (var oldId in BotMessageTracker.TakeAll(chatId))
                                 await TryDelete(bot, chatId, oldId, CancellationToken.None);
                             var total = audio + articles + radio + mags + issues;
-                            var doneMsg = await bot.SendMessage(chatId,
-                                $"✅ Импорт завершён за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
-                                $"🎧 Аудио: +{audio}\n📰 Статьи: +{articles}\n" +
-                                $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}\n" +
-                                $"📰 Выпуски: +{issues}\n\n" +
-                                $"Итого новых: {total}",
+                            var doneText = arg == "covers"
+                                ? $"✅ Обложки обработаны за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
+                                  $"🖼 Проставлено: {coversUpdated} из {coversScanned}"
+                                : $"✅ Импорт завершён за {sw.Elapsed.TotalMinutes:F1} мин.\n" +
+                                  $"🎧 Аудио: +{audio}\n📰 Статьи: +{articles}\n" +
+                                  $"🎙 Радио: +{radio}\n📖 Журналы: +{mags}\n" +
+                                  $"📰 Выпуски: +{issues}\n\n" +
+                                  $"Итого новых: {total}";
+                            var doneMsg = await bot.SendMessage(chatId, doneText,
                                 cancellationToken: CancellationToken.None);
                             BotMessageTracker.Track(chatId, doneMsg.MessageId);
                         }
@@ -273,6 +312,69 @@ public class MessageHandler
                         tempMsgId = tmp.MessageId;
                         reply = await _bookService.AddBookFromUrlAsync(url);
                     }
+                }
+            }
+            else if (NavButtons.Contains(text))
+            {
+                // Нажатие на кнопку постоянной reply-клавиатуры —
+                // убираем эхо текста кнопки, чтобы чат не засорялся
+                await TryDelete(bot, chatId, message.MessageId, ct);
+                switch (text)
+                {
+                    case NavBooks:
+                    {
+                        var (t, k) = BuildCatalogPage(0, "book");
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavAudio:
+                    {
+                        var (t, k) = BuildCatalogPage(0, "audio");
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavArticles:
+                    {
+                        var (t, k) = BuildCatalogPage(0, "article");
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavRadio:
+                    {
+                        var (t, k) = BuildCatalogPage(0, "radio");
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavMagazines:
+                    {
+                        var (t, k) = BuildMagazinesList();
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavAuthors:
+                    {
+                        var (t, k) = BuildAuthorsPage(0);
+                        reply = t; keyboard = k;
+                        break;
+                    }
+                    case NavPick:
+                    {
+                        var tmp = await bot.SendMessage(chatId, "Подбираю материалы... 📚", cancellationToken: ct);
+                        tempMsgId = tmp.MessageId;
+                        var history = _db.GetHistory(telegramUser.Id, limit: 10);
+                        var result = await _bookService.RecommendBooksAsync("посоветуй книгу", history, telegramUser.Id);
+                        reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
+                        break;
+                    }
+                    case NavProfile:
+                    {
+                        reply = BuildProfileMessage(telegramUser.Id);
+                        keyboard = ProfileKeyboard();
+                        break;
+                    }
+                    default:
+                        reply = "👋 Выбери раздел в меню снизу.";
+                        break;
                 }
             }
             else if (IsBookRequest(text))
@@ -331,11 +433,7 @@ public class MessageHandler
             {
                 var (text, kb) = BuildMagazinesList();
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, text,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: kb,
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
             }
 
@@ -343,11 +441,7 @@ public class MessageHandler
             {
                 var (text, kb) = BuildMagazineIssues(magId);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, text,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: kb,
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
             }
 
@@ -357,11 +451,7 @@ public class MessageHandler
                 var page = int.TryParse(data[8..], out var ap) ? ap : 0;
                 var (text, kb) = BuildAuthorsPage(page);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, text,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: kb,
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
             }
 
@@ -371,11 +461,7 @@ public class MessageHandler
                 var slug = data[7..];
                 var (text, kb) = BuildAuthorCard(slug);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, text,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: kb,
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
             }
 
@@ -388,11 +474,7 @@ public class MessageHandler
 
                 var (pageText, pageKeyboard) = BuildCatalogPage(page, type);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, pageText,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: pageKeyboard,
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, pageText, pageKeyboard, ct);
                 return;
             }
 
@@ -402,11 +484,7 @@ public class MessageHandler
                 var book = _bookService.GetBookById(cardId);
                 if (book == null) { await bot.AnswerCallbackQuery(query.Id, "Книга не найдена", cancellationToken: ct); return; }
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId, BookService.FormatBookCard(book),
-                    parseMode: ParseMode.Html,
-                    replyMarkup: BookCardKeyboard(book, user.Id),
-                    linkPreviewOptions: new() { IsDisabled = true },
-                    cancellationToken: ct);
+                await RenderBookCard(bot, chatId, messageId, book, user.Id, ct);
                 return;
             }
 
@@ -617,11 +695,15 @@ public class MessageHandler
                 _db.MarkOnboardingDone(user.Id);
                 await bot.AnswerCallbackQuery(query.Id,
                     data == "onb:skip" ? "Пропущено" : "Готово!", cancellationToken: ct);
-                await bot.EditMessageText(chatId, messageId,
+                // Удаляем inline-сообщение онбординга и шлём приветствие
+                // с постоянной reply-клавиатурой снизу
+                await TryDelete(bot, chatId, messageId, ct);
+                var doneMsg = await bot.SendMessage(chatId,
                     BuildOnboardingDoneMessage(user.FirstName, user.Id),
                     parseMode: ParseMode.Html,
-                    replyMarkup: MainMenuKeyboard(),
+                    replyMarkup: MainReplyKeyboard(),
                     cancellationToken: ct);
+                BotMessageTracker.Track(chatId, doneMsg.MessageId);
                 return;
             }
 
@@ -746,7 +828,7 @@ public class MessageHandler
                     break;
 
                 case "menu:help":
-                    reply = BuildHelpMessage(); keyboard = MainMenuKeyboard();
+                    reply = BuildHelpMessage(); keyboard = null;
                     break;
 
                 case "menu:topics":
@@ -755,7 +837,7 @@ public class MessageHandler
                     break;
 
                 case "menu:mybooks":
-                    reply = BuildMyBooksMessage(user.Id); keyboard = MainMenuKeyboard();
+                    reply = BuildMyBooksMessage(user.Id); keyboard = null;
                     break;
 
                 case "menu:notifications":
@@ -786,10 +868,9 @@ public class MessageHandler
                     break;
 
                 case "menu:back":
-                    await bot.EditMessageText(chatId, messageId,
-                        "👋 Выбери что тебя интересует:",
-                        replyMarkup: MainMenuKeyboard(),
-                        cancellationToken: ct);
+                    // Reply-клавиатура снизу — теперь главная навигация,
+                    // поэтому «домой» = просто закрыть текущее inline-сообщение.
+                    await TryDelete(bot, chatId, messageId, ct);
                     return;
 
                 default:
@@ -918,7 +999,7 @@ public class MessageHandler
         if (filtered.Count == 0)
         {
             var empty = emptyLabels.TryGetValue(typeFilter, out var e) ? e : "материалов";
-            return ($"В каталоге пока нет {empty}. 📚", MainMenuKeyboard());
+            return ($"В каталоге пока нет {empty}. 📚", new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()));
         }
 
         var totalPages = (int)Math.Ceiling(filtered.Count / (double)CatalogPageSize);
@@ -1000,7 +1081,7 @@ public class MessageHandler
     {
         var total = _db.CountAuthors();
         if (total == 0)
-            return ("Авторы пока не определены — у материалов не указано имя автора.", MainMenuKeyboard());
+            return ("Авторы пока не определены — у материалов не указано имя автора.", new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()));
 
         var totalPages = (int)Math.Ceiling(total / (double)AuthorsPageSize);
         page = Math.Clamp(page, 0, totalPages - 1);
@@ -1076,7 +1157,7 @@ public class MessageHandler
             .ToList();
 
         if (withIssues.Count == 0)
-            return ("Журналы ещё не загружены. Запусти /import.", MainMenuKeyboard());
+            return ("Журналы ещё не загружены. Запусти /import.", new InlineKeyboardMarkup(Array.Empty<InlineKeyboardButton[]>()));
 
         var buttons = new List<InlineKeyboardButton[]>();
         foreach (var (id, slug, title, url, count) in withIssues)
@@ -1120,27 +1201,7 @@ public class MessageHandler
     // ════════════════════════════════════════════════════════════
 
     private static InlineKeyboardButton HomeButton() =>
-        InlineKeyboardButton.WithCallbackData("🏠 На главную", "menu:back");
-
-    private static InlineKeyboardMarkup MainMenuKeyboard() => new(new[]
-    {
-        new[] { InlineKeyboardButton.WithCallbackData("🤖 Подбери материал", "menu:recommend") },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData("📖 Книги",  "catalog:book:0"),
-            InlineKeyboardButton.WithCallbackData("🎧 Аудио",  "catalog:audio:0"),
-            InlineKeyboardButton.WithCallbackData("📰 Статьи", "catalog:article:0")
-        },
-        new[]
-        {
-            InlineKeyboardButton.WithCallbackData("🎙 Радио",   "catalog:radio:0"),
-            InlineKeyboardButton.WithCallbackData("📖 Журналы", "magazines:list")
-        },
-        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",  "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("👤 Авторы", "authors:0") },
-        new[] { InlineKeyboardButton.WithCallbackData("⚙️ Профиль", "menu:profile") },
-        new[] { InlineKeyboardButton.WithCallbackData("🔔 Рассылка",     "menu:notifications") }
-    });
+        InlineKeyboardButton.WithCallbackData("✖ Закрыть", "menu:back");
 
     private static InlineKeyboardMarkup RecommendationKeyboard(List<Book> books)
     {
@@ -1335,6 +1396,51 @@ public class MessageHandler
     {
         try { await bot.DeleteMessage(chatId, messageId, ct); }
         catch { /* not critical */ }
+    }
+
+    // Типы контента, для которых имеет смысл показывать обложку
+    private static readonly HashSet<string> PhotoCardTypes = ["book", "audio", "magazine", "article"];
+
+    // Превращает текущее сообщение в карточку материала. Если у материала
+    // есть CoverUrl и тип подходящий — отправляет фото с подписью; иначе
+    // показывает текстовую карточку. В обоих случаях старое сообщение
+    // удаляется и шлётся новое (фото нельзя превратить в текст одним edit).
+    private async Task RenderBookCard(
+        ITelegramBotClient bot, long chatId, int oldMessageId,
+        Book book, long telegramId, CancellationToken ct)
+    {
+        var text = BookService.FormatBookCard(book);
+        var kb   = BookCardKeyboard(book, telegramId);
+
+        var photoEligible = !string.IsNullOrWhiteSpace(book.CoverUrl)
+            && book.CoverUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            && PhotoCardTypes.Contains(book.Type);
+
+        await TryDelete(bot, chatId, oldMessageId, ct);
+
+        if (photoEligible)
+        {
+            try
+            {
+                // Лимит подписи у Telegram — 1024 символа
+                var caption = text.Length > 1000 ? text[..1000] + "…" : text;
+                var photoMsg = await bot.SendPhoto(chatId,
+                    photo: new InputFileUrl(book.CoverUrl),
+                    caption: caption,
+                    parseMode: ParseMode.Html,
+                    replyMarkup: kb,
+                    cancellationToken: ct);
+                BotMessageTracker.SetCurrent(chatId, photoMsg.MessageId);
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Bot] Не удалось отправить фото-карточку, fallback на текст");
+            }
+        }
+
+        var sentId = await SendMessage(bot, chatId, text, kb, ct);
+        BotMessageTracker.SetCurrent(chatId, sentId);
     }
 
     // Заменяет старое сообщение новым контентом: edit, если влезает,

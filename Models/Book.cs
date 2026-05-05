@@ -13,4 +13,5 @@ public class Book
     public string AudioUrl { get; set; } = string.Empty;
     public long? IssueId { get; set; }
     public DateTime? ReleasedAt { get; set; }
+    public string CoverUrl { get; set; } = string.Empty;
 }

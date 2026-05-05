@@ -219,11 +219,40 @@ public class ContentImportService
                 Tags = tags,
                 Url = url,
                 Type = type,
-                AudioUrl = isAudio ? url : ""
+                AudioUrl = isAudio ? url : "",
+                CoverUrl = meta.GetValueOrDefault("og_image") ?? ""
             });
             added++;
         }
         return added;
+    }
+
+    // ─── Backfill обложек для уже залитых записей ─────────────────────
+    // Парсит og:image со страницы каждого Book без CoverUrl и проставляет.
+    // Без вызовов AI — только HTTP, поэтому быстрее и не упирается в Groq лимит.
+    public async Task<(int Updated, int Scanned)> BackfillCoversAsync(string? typeFilter = null, CancellationToken ct = default)
+    {
+        if (!await _gate.WaitAsync(0, ct))
+            throw new InvalidOperationException("Импорт уже выполняется.");
+        try
+        {
+            var rows = _db.GetBooksWithoutCover(typeFilter);
+            _logger.LogInformation("[Import covers] {Count} материалов без обложки", rows.Count);
+            var updated = 0;
+            foreach (var (id, url) in rows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var html = await FetchAsync(url, ct);
+                if (string.IsNullOrEmpty(html)) continue;
+                var meta = ExtractMeta(html);
+                var cover = meta.GetValueOrDefault("og_image");
+                if (string.IsNullOrWhiteSpace(cover)) continue;
+                _db.SetBookCover(id, cover);
+                updated++;
+            }
+            return (updated, rows.Count);
+        }
+        finally { _gate.Release(); }
     }
 
     // ─── HTTP / sitemap / meta ────────────────────────────────────────

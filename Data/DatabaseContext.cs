@@ -64,7 +64,8 @@ public partial class DatabaseContext
             "ALTER TABLE Books ADD COLUMN AudioUrl TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE Books ADD COLUMN IssueId INTEGER",
             "ALTER TABLE Books ADD COLUMN ReleasedAt TEXT",
-            "ALTER TABLE Users ADD COLUMN LastBotMessageId INTEGER"
+            "ALTER TABLE Users ADD COLUMN LastBotMessageId INTEGER",
+            "ALTER TABLE Books ADD COLUMN CoverUrl TEXT NOT NULL DEFAULT ''"
         })
         {
             cmd.CommandText = migration;
@@ -369,7 +370,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books WHERE Id = $id";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books WHERE Id = $id";
         cmd.Parameters.AddWithValue("$id", id);
         using var reader = cmd.ExecuteReader();
         if (!reader.Read()) return null;
@@ -381,7 +382,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books";
         using var reader = cmd.ExecuteReader();
         var list = new List<Book>();
         while (reader.Read()) list.Add(MapBook(reader));
@@ -394,8 +395,8 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO Books (Title, Author, Description, Tags, Url, Type)
-            VALUES ($title, $author, $desc, $tags, $url, $type)
+            INSERT INTO Books (Title, Author, Description, Tags, Url, Type, CoverUrl)
+            VALUES ($title, $author, $desc, $tags, $url, $type, $cover)
             """;
         cmd.Parameters.AddWithValue("$title",  book.Title);
         cmd.Parameters.AddWithValue("$author", book.Author);
@@ -403,6 +404,7 @@ public partial class DatabaseContext
         cmd.Parameters.AddWithValue("$tags",   book.Tags);
         cmd.Parameters.AddWithValue("$url",    book.Url);
         cmd.Parameters.AddWithValue("$type",   book.Type);
+        cmd.Parameters.AddWithValue("$cover",  book.CoverUrl ?? "");
         cmd.ExecuteNonQuery();
     }
 
@@ -574,7 +576,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books WHERE Type = $type ORDER BY Id DESC";
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books WHERE Type = $type ORDER BY Id DESC";
         if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$type", type);
@@ -620,7 +622,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt FROM Books " +
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books " +
                   "WHERE TRIM(Author) = $author ORDER BY Id DESC";
         if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
         cmd.CommandText = sql;
@@ -705,7 +707,7 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl
             FROM Books b
             INNER JOIN ReadBooks r ON r.BookId = b.Id
             WHERE r.TelegramId = $tid
@@ -787,7 +789,7 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl
             FROM Books b
             INNER JOIN Favorites f ON f.ContentId = b.Id
             WHERE f.TelegramId = $tid
@@ -824,6 +826,37 @@ public partial class DatabaseContext
         Type        = r.IsDBNull(6) ? "book" : r.GetString(6),
         AudioUrl    = r.FieldCount > 7 && !r.IsDBNull(7) ? r.GetString(7) : string.Empty,
         IssueId     = r.FieldCount > 8 && !r.IsDBNull(8) ? r.GetInt64(8) : null,
-        ReleasedAt  = r.FieldCount > 9 && !r.IsDBNull(9) ? DateTime.Parse(r.GetString(9)) : null
+        ReleasedAt  = r.FieldCount > 9 && !r.IsDBNull(9) ? DateTime.Parse(r.GetString(9)) : null,
+        CoverUrl    = r.FieldCount > 10 && !r.IsDBNull(10) ? r.GetString(10) : string.Empty
     };
+
+    public List<(long Id, string Url)> GetBooksWithoutCover(string? typeFilter = null, int? limit = null)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        var sql = "SELECT Id, Url FROM Books WHERE (CoverUrl IS NULL OR CoverUrl = '') AND Url <> ''";
+        if (typeFilter != null)
+        {
+            sql += " AND Type = $t";
+            cmd.Parameters.AddWithValue("$t", typeFilter);
+        }
+        if (limit.HasValue) sql += $" LIMIT {limit.Value}";
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        var list = new List<(long, string)>();
+        while (reader.Read()) list.Add((reader.GetInt64(0), reader.GetString(1)));
+        return list;
+    }
+
+    public void SetBookCover(long bookId, string coverUrl)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Books SET CoverUrl = $c WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$c",  coverUrl ?? "");
+        cmd.Parameters.AddWithValue("$id", bookId);
+        cmd.ExecuteNonQuery();
+    }
 }
