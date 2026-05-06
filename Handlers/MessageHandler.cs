@@ -385,7 +385,6 @@ public class MessageHandler
             {
                 var history = _db.GetHistory(telegramUser.Id, limit: 10);
                 reply = await HandleFreeDialogAsync(text, telegramUser.FirstName, history);
-                keyboard = QuickActionsKeyboard();
             }
 
             if (!isCommand)
@@ -1333,13 +1332,6 @@ public class MessageHandler
             }
         });
     }
-
-    private static InlineKeyboardMarkup QuickActionsKeyboard() => new(new[]
-    {
-        new[] { InlineKeyboardButton.WithCallbackData("📚 Посоветуй книгу", "menu:recommend") },
-        new[] { InlineKeyboardButton.WithCallbackData("🔍 Поиск",        "menu:topics"),
-                InlineKeyboardButton.WithCallbackData("📋 Каталог",         "menu:catalog") }
-    });
 
     // ════════════════════════════════════════════════════════════
     // Утилиты отправки (защита от 4096 символов)
