@@ -427,11 +427,16 @@ public class MessageHandler
 
         try
         {
-            // ── «✖ Закрыть» — мгновенно, без typing-индикатора ────────
+            // ── «🏠 В меню» — заменяет inline-сообщение коротким
+            // подтверждением. Удалять полностью не стали: пользователю
+            // непонятно, куда делось — а так видно, что он у главного
+            // меню (нижняя reply-клавиатура).
             if (data == "menu:back")
             {
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await TryDelete(bot, chatId, messageId, ct);
+                await ReplaceMessage(bot, chatId, messageId,
+                    "🏠 <b>Главное меню</b>\n\nВыбери раздел в меню снизу.",
+                    null, ct);
                 return;
             }
 
