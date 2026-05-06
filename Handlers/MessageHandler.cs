@@ -397,7 +397,11 @@ public class MessageHandler
             if (tempMsgId.HasValue)
                 await TryDelete(bot, chatId, tempMsgId.Value, ct);
 
-            var sentId = await SendMessage(bot, chatId, reply, keyboard, ct);
+            // Если inline-клавиатуры нет — пере-выставляем reply-клавиатуру.
+            // Так даже после рестарта или сворачивания меню снизу всегда
+            // вернётся при следующем простом текстовом ответе бота.
+            IReplyMarkup? markup = keyboard ?? (IReplyMarkup)MainReplyKeyboard();
+            var sentId = await SendMessage(bot, chatId, reply, markup, ct);
             BotMessageTracker.Track(chatId, sentId);
         }
         catch (Exception ex)
@@ -1483,7 +1487,7 @@ public class MessageHandler
 
     private static async Task<int> SendMessage(
         ITelegramBotClient bot, long chatId, string text,
-        InlineKeyboardMarkup? keyboard, CancellationToken ct)
+        IReplyMarkup? keyboard, CancellationToken ct)
     {
         const int MaxLen = 4000;
         if (text.Length <= MaxLen)
