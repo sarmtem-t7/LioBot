@@ -186,13 +186,10 @@ public class BookService
 
             var systemMsg = """
                 Ты помощник христианского контент-хаба. Подбираешь материалы из каталога: книги, аудиокниги, статьи, радио.
-                Выбери РОВНО 2 материала РАЗНЫХ форматов (один — книга или аудиокнига, другой — статья или радио),
-                подходящих к запросу пользователя. Если в каталоге только один формат — выбери два лучших.
-                В комментарии к ПЕРВОМУ материалу можно кратко упомянуть, как он дополняет второй.
-                Ответ — ТОЛЬКО JSON-массив объектов строго такого формата:
-                [{"id": 12, "comment": "короткий комментарий почему подходит и как связан со вторым"},
-                 {"id": 47, "comment": "..."}]
-                Комментарий — 1-2 предложения, тёплый живой тон. Никакого текста вне JSON.
+                Выбери РОВНО 1 материал, наиболее подходящий запросу пользователя.
+                Ответ — ТОЛЬКО JSON-массив из одного объекта строго такого формата:
+                [{"id": 12, "comment": "короткий комментарий почему подходит"}]
+                Комментарий — 1 короткое предложение, тёплый живой тон. Никакого текста вне JSON.
                 """;
 
             var userMsg = $"Каталог материалов:\n{catalog}\n\nЗапрос пользователя: {userRequest}{historyContext}{prefsContext}{avoidLine}";
@@ -203,7 +200,7 @@ public class BookService
             selectedBooks = parsed
                 .Select(p => (Book: candidates.FirstOrDefault(b => b.Id == p.Id), p.Comment))
                 .Where(x => x.Book != null)
-                .Take(2)
+                .Take(1)
                 .Select(x => { comments[x.Book!.Id] = x.Comment; return x.Book!; })
                 .ToList();
         }
@@ -214,7 +211,7 @@ public class BookService
         }
 
         if (selectedBooks.Count == 0)
-            selectedBooks = candidates.Take(2).ToList();
+            selectedBooks = candidates.Take(1).ToList();
 
         // Подстрахуем пустые комментарии коротким описанием из каталога,
         // чтобы карточка книги никогда не была без пояснения.
@@ -227,9 +224,11 @@ public class BookService
         if (telegramId > 0)
             _db.MarkBooksAsSeen(telegramId, selectedBooks.Select(b => b.Id));
 
+        var firstComment = selectedBooks.Count > 0 && comments.TryGetValue(selectedBooks[0].Id, out var c0) ? c0 : null;
         return new RecommendationResult(
             FormatRecommendation("📚 Вот что подобрал:", selectedBooks, comments),
-            selectedBooks);
+            selectedBooks,
+            firstComment);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -275,15 +274,15 @@ public class BookService
                 $"ID:{b.Id} | «{b.Title}» — {b.Author} | {b.Tags}"));
 
             var idsRaw = await _claude.AskAsync(
-                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 2 целых чисел ID (например: [12, 47]). Без текста.",
-                $"Список:\n{catalog}\n\nВыбери 2 книги, похожие на «{source.Title}» (теги: {source.Tags}).",
-                maxTokens: 60);
+                "Ты помощник христианского книжного клуба. Верни ТОЛЬКО JSON-массив из 1 целого числа ID (например: [12]). Без текста.",
+                $"Список:\n{catalog}\n\nВыбери 1 материал, похожий на «{source.Title}» (теги: {source.Tags}).",
+                maxTokens: 30);
 
             selected = ParseJsonIds(idsRaw)
                 .Select(id => candidates.FirstOrDefault(b => b.Id == id))
                 .Where(b => b != null)
                 .Cast<Book>()
-                .Take(2)
+                .Take(1)
                 .ToList();
         }
         catch (Exception ex)
@@ -293,13 +292,13 @@ public class BookService
         }
 
         if (selected.Count == 0)
-            selected = candidates.Take(2).ToList();
+            selected = candidates.Take(1).ToList();
 
         if (telegramId > 0)
             _db.MarkBooksAsSeen(telegramId, selected.Select(b => b.Id));
 
         return new RecommendationResult(
-            FormatBookList($"🔍 Похожие на «{EscapeHtml(source.Title)}»:", selected),
+            FormatBookList($"🔍 Похожее на «{EscapeHtml(source.Title)}»:", selected),
             selected);
     }
 
@@ -379,6 +378,24 @@ public class BookService
         var msgs = history.Where(h => h.Role == "user").TakeLast(5).Select(h => h.Content);
         var joined = string.Join(" | ", msgs);
         return string.IsNullOrEmpty(joined) ? "" : $"\nКонтекст: {joined}";
+    }
+
+    // Компактная подпись для одной рекомендации: подходит и под caption фото
+    // (≤1024 символов), и под обычное сообщение.
+    internal static string FormatRecommendationCaption(Book book, string? comment)
+    {
+        var sb = new StringBuilder();
+        sb.Append(IconFor(book.Type));
+        sb.Append($" <b>«{EscapeHtml(book.Title)}»</b>");
+        if (!string.IsNullOrWhiteSpace(book.Author))
+            sb.Append($" — {EscapeHtml(book.Author)}");
+        if (!string.IsNullOrWhiteSpace(comment))
+        {
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.Append($"<i>{EscapeHtml(comment)}</i>");
+        }
+        return sb.ToString();
     }
 
     // Форматирование с AI-комментариями к каждой книге (для рекомендаций)

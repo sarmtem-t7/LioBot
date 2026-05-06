@@ -220,9 +220,8 @@ public class MessageHandler
             {
                 var query = text[8..].Trim();
                 var tmp = await bot.SendMessage(chatId, "Ищу... 📖", cancellationToken: ct);
-                tempMsgId = tmp.MessageId;
-                var result = await _bookService.RecommendBooksAsync(query, null, telegramUser.Id);
-                reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
+                await SendRecommendationFresh(bot, chatId, telegramUser.Id, query, 0, tmp.MessageId, ct);
+                return;
             }
             else if (text == "/search")
             {
@@ -359,12 +358,10 @@ public class MessageHandler
                     }
                     case NavPick:
                     {
-                        var tmp = await bot.SendMessage(chatId, "Подбираю материалы... 📚", cancellationToken: ct);
-                        tempMsgId = tmp.MessageId;
-                        var history = _db.GetHistory(telegramUser.Id, limit: 10);
-                        var result = await _bookService.RecommendBooksAsync("посоветуй книгу", history, telegramUser.Id);
-                        reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
-                        break;
+                        var tmp = await bot.SendMessage(chatId, "Подбираю материал... 📚", cancellationToken: ct);
+                        await SendRecommendationFresh(bot, chatId, telegramUser.Id,
+                            "посоветуй материал", historyLimit: 10, deleteMessageId: tmp.MessageId, ct);
+                        return;
                     }
                     case NavProfile:
                     {
@@ -379,11 +376,10 @@ public class MessageHandler
             }
             else if (IsBookRequest(text))
             {
-                var tmp = await bot.SendMessage(chatId, "Подбираю материалы... 📚", cancellationToken: ct);
-                tempMsgId = tmp.MessageId;
-                var history = _db.GetHistory(telegramUser.Id, limit: 10);
-                var result  = await _bookService.RecommendBooksAsync(text, history, telegramUser.Id);
-                reply = result.Text; keyboard = RecommendationKeyboard(result.Books);
+                var tmp = await bot.SendMessage(chatId, "Подбираю материал... 📚", cancellationToken: ct);
+                await SendRecommendationFresh(bot, chatId, telegramUser.Id, text,
+                    historyLimit: 10, deleteMessageId: tmp.MessageId, ct);
+                return;
             }
             else
             {
@@ -428,6 +424,14 @@ public class MessageHandler
 
         try
         {
+            // ── «✖ Закрыть» — мгновенно, без typing-индикатора ────────
+            if (data == "menu:back")
+            {
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await TryDelete(bot, chatId, messageId, ct);
+                return;
+            }
+
             // ── Журналы: список изданий и выпуски ─────────────────────
             if (data == "magazines:list")
             {
@@ -741,7 +745,20 @@ public class MessageHandler
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
                 var result = await _bookService.GetSimilarBooksAsync(similarId, user.Id);
-                await ReplaceMessage(bot, chatId, messageId, result.Text, RecommendationKeyboard(result.Books), ct);
+                await TryDelete(bot, chatId, messageId, ct);
+                if (result.Books.Count == 0)
+                {
+                    var sid = await SendMessage(bot, chatId, result.Text, null, ct);
+                    BotMessageTracker.Track(chatId, sid);
+                }
+                else
+                {
+                    var book = result.Books[0];
+                    var caption = BookService.FormatRecommendationCaption(book, null);
+                    var sid = await SendCardMessage(bot, chatId, book, caption,
+                        RecommendationCardKeyboard(book, user.Id), ct);
+                    BotMessageTracker.Track(chatId, sid);
+                }
                 return;
             }
 
@@ -793,12 +810,8 @@ public class MessageHandler
                 }
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
-                await ReplaceMessage(bot, chatId, messageId, "Подбираю материалы... 📚", null, ct);
-                var history = _db.GetHistory(user.Id, limit: 10);
-                var result  = await _bookService.RecommendBooksAsync(tag, history, user.Id);
-                _db.SaveMessage(user.Id, "user",      $"Тема: {tag}");
-                _db.SaveMessage(user.Id, "assistant", result.Text);
-                await ReplaceMessage(bot, chatId, messageId, result.Text, RecommendationKeyboard(result.Books), ct);
+                await SendRecommendationFresh(bot, chatId, user.Id, $"Тема: {tag}",
+                    historyLimit: 10, deleteMessageId: messageId, ct);
                 return;
             }
 
@@ -813,14 +826,9 @@ public class MessageHandler
             switch (data)
             {
                 case "menu:recommend":
-                    await ReplaceMessage(bot, chatId, messageId, "Подбираю материалы... 📚", null, ct);
-                    var recHistory = _db.GetHistory(user.Id, limit: 10);
-                    var recResult  = await _bookService.RecommendBooksAsync("посоветуй книгу", recHistory, user.Id);
-                    _db.SaveMessage(user.Id, "user",      "Посоветуй книгу");
-                    _db.SaveMessage(user.Id, "assistant", recResult.Text);
-                    reply    = recResult.Text;
-                    keyboard = RecommendationKeyboard(recResult.Books);
-                    break;
+                    await SendRecommendationFresh(bot, chatId, user.Id,
+                        "посоветуй материал", historyLimit: 10, deleteMessageId: messageId, ct);
+                    return;
 
                 case "menu:catalog":
                     var (ct2, ck2) = BuildCatalogPage(0, "all");
@@ -858,19 +866,8 @@ public class MessageHandler
                     break;
 
                 case "recommend:more":
-                    await ReplaceMessage(bot, chatId, messageId, "Ищу другие варианты... 📚", null, ct);
-                    var moreHistory = _db.GetHistory(user.Id, limit: 20);
-                    var moreResult  = await _bookService.RecommendBooksAsync("посоветуй другие книги", moreHistory, user.Id);
-                    _db.SaveMessage(user.Id, "user",      "Посоветуй другие книги");
-                    _db.SaveMessage(user.Id, "assistant", moreResult.Text);
-                    reply    = moreResult.Text;
-                    keyboard = RecommendationKeyboard(moreResult.Books);
-                    break;
-
-                case "menu:back":
-                    // Reply-клавиатура снизу — теперь главная навигация,
-                    // поэтому «домой» = просто закрыть текущее inline-сообщение.
-                    await TryDelete(bot, chatId, messageId, ct);
+                    await SendRecommendationFresh(bot, chatId, user.Id,
+                        "посоветуй другой материал", historyLimit: 20, deleteMessageId: messageId, ct);
                     return;
 
                 default:
@@ -1203,29 +1200,6 @@ public class MessageHandler
     private static InlineKeyboardButton HomeButton() =>
         InlineKeyboardButton.WithCallbackData("✖ Закрыть", "menu:back");
 
-    private static InlineKeyboardMarkup RecommendationKeyboard(List<Book> books)
-    {
-        var rows = new List<InlineKeyboardButton[]>();
-        for (var i = 0; i < books.Count; i++)
-        {
-            var book = books[i];
-            var n    = i + 1;
-            var doneLabel = book.Type is "audio" or "radio" ? "Прослушал" : "Прочитал";
-            rows.Add([
-                InlineKeyboardButton.WithCallbackData($"📝 Подробнее #{n}", $"book:annotate:{book.Id}")
-            ]);
-            rows.Add([
-                InlineKeyboardButton.WithCallbackData($"✅ {doneLabel} #{n}", $"book:read:{book.Id}")
-            ]);
-        }
-        rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другие варианты", "recommend:more")]);
-        rows.Add([
-            InlineKeyboardButton.WithCallbackData("📋 Каталог",    "catalog:all:0"),
-            HomeButton()
-        ]);
-        return new InlineKeyboardMarkup(rows);
-    }
-
     private static (string Done, string InProgress, string Pause, string Link) ActionLabels(string? type) => type switch
     {
         "audio" => ("✅ Прослушал", "🎧 Слушаю", "⏸ Отложить", "🎧 Слушать"),
@@ -1401,22 +1375,16 @@ public class MessageHandler
     // Типы контента, для которых имеет смысл показывать обложку
     private static readonly HashSet<string> PhotoCardTypes = ["book", "audio", "magazine", "article"];
 
-    // Превращает текущее сообщение в карточку материала. Если у материала
-    // есть CoverUrl и тип подходящий — отправляет фото с подписью; иначе
-    // показывает текстовую карточку. В обоих случаях старое сообщение
-    // удаляется и шлётся новое (фото нельзя превратить в текст одним edit).
-    private async Task RenderBookCard(
-        ITelegramBotClient bot, long chatId, int oldMessageId,
-        Book book, long telegramId, CancellationToken ct)
+    // Шлёт сообщение-карточку: фото с подписью, если есть подходящий
+    // CoverUrl, иначе обычный текст. Используется для книжных карточек
+    // и для рекомендаций.
+    private async Task<int> SendCardMessage(
+        ITelegramBotClient bot, long chatId,
+        Book book, string text, InlineKeyboardMarkup? kb, CancellationToken ct)
     {
-        var text = BookService.FormatBookCard(book);
-        var kb   = BookCardKeyboard(book, telegramId);
-
         var photoEligible = !string.IsNullOrWhiteSpace(book.CoverUrl)
             && book.CoverUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)
             && PhotoCardTypes.Contains(book.Type);
-
-        await TryDelete(bot, chatId, oldMessageId, ct);
 
         if (photoEligible)
         {
@@ -1430,17 +1398,84 @@ public class MessageHandler
                     parseMode: ParseMode.Html,
                     replyMarkup: kb,
                     cancellationToken: ct);
-                BotMessageTracker.SetCurrent(chatId, photoMsg.MessageId);
-                return;
+                return photoMsg.MessageId;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[Bot] Не удалось отправить фото-карточку, fallback на текст");
             }
         }
+        return await SendMessage(bot, chatId, text, kb, ct);
+    }
 
-        var sentId = await SendMessage(bot, chatId, text, kb, ct);
+    // Превращает текущее сообщение в карточку материала. В переходах
+    // фото↔текст всегда delete + send (фото нельзя «заэдитить» в текст).
+    private async Task RenderBookCard(
+        ITelegramBotClient bot, long chatId, int oldMessageId,
+        Book book, long telegramId, CancellationToken ct)
+    {
+        await TryDelete(bot, chatId, oldMessageId, ct);
+        var sentId = await SendCardMessage(bot, chatId, book,
+            BookService.FormatBookCard(book),
+            BookCardKeyboard(book, telegramId), ct);
         BotMessageTracker.SetCurrent(chatId, sentId);
+    }
+
+    // Шлёт одну рекомендацию как фото-карточку (или текст, если обложки
+    // нет). Сохраняет реплику в истории. Если deleteMessageId задан —
+    // сначала удаляет старое сообщение (для callback-флоу).
+    private async Task SendRecommendationFresh(
+        ITelegramBotClient bot, long chatId, long telegramId,
+        string userQuery, int historyLimit, int? deleteMessageId, CancellationToken ct)
+    {
+        if (deleteMessageId.HasValue)
+            await TryDelete(bot, chatId, deleteMessageId.Value, ct);
+
+        var history = _db.GetHistory(telegramId, limit: historyLimit);
+        var result  = await _bookService.RecommendBooksAsync(userQuery, history, telegramId);
+
+        string assistantText;
+        int sentId;
+        if (result.Books.Count == 0)
+        {
+            assistantText = result.Text;
+            sentId = await SendMessage(bot, chatId, assistantText, null, ct);
+        }
+        else
+        {
+            var book = result.Books[0];
+            assistantText = BookService.FormatRecommendationCaption(book, result.Comment);
+            sentId = await SendCardMessage(bot, chatId, book,
+                assistantText, RecommendationCardKeyboard(book, telegramId), ct);
+        }
+        BotMessageTracker.Track(chatId, sentId);
+        _db.SaveMessage(telegramId, "user", userQuery);
+        _db.SaveMessage(telegramId, "assistant", assistantText);
+    }
+
+    // Кнопки на фото-карточке рекомендации: статус + ссылка + другой вариант.
+    // Без «← В каталог» (рекомендации идут сами по себе, не из каталога).
+    private InlineKeyboardMarkup RecommendationCardKeyboard(Book book, long telegramId)
+    {
+        var labels  = ActionLabels(book.Type);
+        var reading = telegramId > 0 && _db.GetReadingNow(telegramId).Any(b => b.Id == book.Id);
+        var readingBtn = reading
+            ? InlineKeyboardButton.WithCallbackData(labels.Pause,      $"book:stopreading:{book.Id}")
+            : InlineKeyboardButton.WithCallbackData(labels.InProgress, $"book:reading:{book.Id}");
+
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData(labels.Done, $"book:read:{book.Id}"),
+                readingBtn
+            }
+        };
+        if (!string.IsNullOrEmpty(book.Url))
+            rows.Add([InlineKeyboardButton.WithUrl(labels.Link, book.Url)]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другой вариант", "recommend:more")]);
+        rows.Add([HomeButton()]);
+        return new InlineKeyboardMarkup(rows);
     }
 
     // Заменяет старое сообщение новым контентом: edit, если влезает,
