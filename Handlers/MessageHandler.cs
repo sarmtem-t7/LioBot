@@ -1052,6 +1052,7 @@ public class MessageHandler
         });
 
         buttons.Add([InlineKeyboardButton.WithCallbackData("🤖 Подбери мне", "menu:recommend")]);
+        buttons.Add([HomeButton()]);
 
         return (text, new InlineKeyboardMarkup(buttons));
     }
@@ -1100,6 +1101,7 @@ public class MessageHandler
         nav.Add(InlineKeyboardButton.WithCallbackData($"стр. {page + 1}/{totalPages}", $"authors:{page}"));
         if (page < totalPages - 1) nav.Add(InlineKeyboardButton.WithCallbackData("→", $"authors:{page + 1}"));
         buttons.Add(nav.ToArray());
+        buttons.Add([HomeButton()]);
 
         return (text, new InlineKeyboardMarkup(buttons));
     }
@@ -1116,7 +1118,8 @@ public class MessageHandler
         if (author is null)
             return ("Автор не найден — открой список заново.", new InlineKeyboardMarkup(new[]
             {
-                new[] { InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0") }
+                new[] { InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0") },
+                new[] { HomeButton() }
             }));
 
         var items = _db.GetByAuthor(author, limit: 50);
@@ -1132,7 +1135,11 @@ public class MessageHandler
             if (label.Length > 48) label = label[..48] + "…";
             buttons.Add([InlineKeyboardButton.WithCallbackData(label, $"book:card:{b.Id}")]);
         }
-        buttons.Add([InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0")]);
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("👤 К списку авторов", "authors:0"),
+            HomeButton()
+        });
         return (sb.ToString(), new InlineKeyboardMarkup(buttons));
     }
 
@@ -1156,6 +1163,7 @@ public class MessageHandler
         foreach (var (id, slug, title, url, count) in withIssues)
             buttons.Add([InlineKeyboardButton.WithCallbackData(
                 $"📖 {title} · {count} выпусков", $"mag:issues:{id}")]);
+        buttons.Add([HomeButton()]);
         return ("📖 <b>Журналы</b>\n\nВыбери издание:", new InlineKeyboardMarkup(buttons));
     }
 
@@ -1165,7 +1173,8 @@ public class MessageHandler
         if (issues.Count == 0)
             return ("Выпуски ещё не загружены.", new InlineKeyboardMarkup(new[]
             {
-                new[] { InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list") }
+                new[] { InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list") },
+                new[] { HomeButton() }
             }));
 
         var sb = new System.Text.StringBuilder();
@@ -1179,13 +1188,22 @@ public class MessageHandler
             else
                 buttons.Add([InlineKeyboardButton.WithCallbackData($"📖 {title}", $"mag:issues:{magazineId}")]);
         }
-        buttons.Add([InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list")]);
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list"),
+            HomeButton()
+        });
         return (sb.ToString(), new InlineKeyboardMarkup(buttons));
     }
 
     // ════════════════════════════════════════════════════════════
     // Клавиатуры
     // ════════════════════════════════════════════════════════════
+
+    // Универсальный «домой» — закрывает текущее inline-сообщение,
+    // оставляя пользователя у нижней reply-клавиатуры с разделами.
+    private static InlineKeyboardButton HomeButton() =>
+        InlineKeyboardButton.WithCallbackData("🏠 В меню", "menu:back");
 
     private static (string Done, string InProgress, string Pause, string Link) ActionLabels(string? type) => type switch
     {
@@ -1217,7 +1235,11 @@ public class MessageHandler
         };
         if (!string.IsNullOrEmpty(book.Url))
             rows.Add([InlineKeyboardButton.WithUrl(labels.Link, book.Url)]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0")]);
+        rows.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("← В каталог", "catalog:all:0"),
+            HomeButton()
+        });
         return new InlineKeyboardMarkup(rows);
     }
 
@@ -1236,7 +1258,8 @@ public class MessageHandler
     private static InlineKeyboardMarkup ProfileKeyboard() => new(new[]
     {
         new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить этап",      "profile:editstage") },
-        new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить интересы",  "profile:editinterests") }
+        new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить интересы",  "profile:editinterests") },
+        new[] { HomeButton() }
     });
 
     private static InlineKeyboardMarkup ProfileStageKeyboard()
@@ -1311,6 +1334,7 @@ public class MessageHandler
                 .Select(t => InlineKeyboardButton.WithCallbackData(t.Label, $"topic:{t.Tag}"))
                 .ToArray())
             .ToList();
+        topicRows.Add([HomeButton()]);
         return new InlineKeyboardMarkup(topicRows);
     }
 
@@ -1329,7 +1353,8 @@ public class MessageHandler
             new[] {
                 InlineKeyboardButton.WithCallbackData(
                     current == "off" ? "🔕 Выключено ✓" : "🔕 Выключить", "notify:off")
-            }
+            },
+            new[] { HomeButton() }
         });
     }
 
@@ -1447,6 +1472,7 @@ public class MessageHandler
         if (!string.IsNullOrEmpty(book.Url))
             rows.Add([InlineKeyboardButton.WithUrl(labels.Link, book.Url)]);
         rows.Add([InlineKeyboardButton.WithCallbackData("🔄 Другой вариант", "recommend:more")]);
+        rows.Add([HomeButton()]);
         return new InlineKeyboardMarkup(rows);
     }
 
