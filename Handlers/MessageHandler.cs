@@ -427,16 +427,18 @@ public class MessageHandler
 
         try
         {
-            // ── «🏠 В меню» — заменяет inline-сообщение коротким
-            // подтверждением. Удалять полностью не стали: пользователю
-            // непонятно, куда делось — а так видно, что он у главного
-            // меню (нижняя reply-клавиатура).
+            // ── «🏠 В меню» — удаляем старое inline-сообщение и шлём
+            // короткое подтверждение с приколотой reply-клавиатурой,
+            // чтобы нижнее меню гарантированно вернулось (EditMessageText
+            // не умеет менять reply-клавиатуру — это состояние чата).
             if (data == "menu:back")
             {
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
-                await ReplaceMessage(bot, chatId, messageId,
+                await TryDelete(bot, chatId, messageId, ct);
+                var sentId = await SendMessage(bot, chatId,
                     "🏠 <b>Главное меню</b>\n\nВыбери раздел в меню снизу.",
-                    null, ct);
+                    MainReplyKeyboard(), ct);
+                BotMessageTracker.Track(chatId, sentId);
                 return;
             }
 
