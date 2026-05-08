@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Quartz;
 using Telegram.Bot;
 using Telegram.Bot.Polling;
+using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -89,6 +90,32 @@ public class BotPollingService : BackgroundService
     {
         var me = await _bot.GetMe(stoppingToken);
         _logger.LogInformation("[Bot] Запущен как @{Username}", me.Username);
+
+        // Регистрируем список команд + переключаем кнопку «Меню» в углу
+        // ввода в режим commands. Тогда нажатие на неё откроет навигацию
+        // по разделам прямо у поля ввода.
+        try
+        {
+            await _bot.SetMyCommands(new[]
+            {
+                new BotCommand { Command = "pick",      Description = "🤖 Подбери материал" },
+                new BotCommand { Command = "books",     Description = "📖 Книги" },
+                new BotCommand { Command = "audio",     Description = "🎧 Аудио" },
+                new BotCommand { Command = "articles",  Description = "📰 Статьи" },
+                new BotCommand { Command = "radio",     Description = "🎙 Радио" },
+                new BotCommand { Command = "magazines", Description = "📔 Журналы" },
+                new BotCommand { Command = "authors",   Description = "👤 Авторы" },
+                new BotCommand { Command = "profile",   Description = "📊 Профиль" },
+                new BotCommand { Command = "mybooks",   Description = "📚 Мои материалы" },
+                new BotCommand { Command = "help",      Description = "ℹ️ Помощь" }
+            }, cancellationToken: stoppingToken);
+            await _bot.SetChatMenuButton(menuButton: new MenuButtonCommands(),
+                cancellationToken: stoppingToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Bot] Не удалось зарегистрировать команды/кнопку меню");
+        }
 
         var options = new ReceiverOptions
         {

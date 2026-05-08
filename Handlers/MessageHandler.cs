@@ -204,8 +204,45 @@ public class MessageHandler
             }
             else if (text.StartsWith("/books"))
             {
-                var (pageText, pageKeyboard) = BuildCatalogPage(0, "all");
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "book");
                 reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/audio"))
+            {
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "audio");
+                reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/articles"))
+            {
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "article");
+                reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/radio"))
+            {
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "radio");
+                reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/magazines"))
+            {
+                var (pageText, pageKeyboard) = BuildMagazinesList();
+                reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/authors"))
+            {
+                var (pageText, pageKeyboard) = BuildAuthorsPage(0);
+                reply = pageText; keyboard = pageKeyboard;
+            }
+            else if (text.StartsWith("/profile"))
+            {
+                reply = BuildProfileMessage(telegramUser.Id);
+                keyboard = ProfileKeyboard();
+            }
+            else if (text.StartsWith("/pick"))
+            {
+                var tmp = await bot.SendMessage(chatId, "Подбираю материал... 📚", cancellationToken: ct);
+                await SendRecommendationFresh(bot, chatId, telegramUser.Id,
+                    "посоветуй материал", historyLimit: 10, deleteMessageId: tmp.MessageId, ct);
+                return;
             }
             else if (text.StartsWith("/mybooks"))
             {
