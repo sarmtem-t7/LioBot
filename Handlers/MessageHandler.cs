@@ -295,6 +295,8 @@ public class MessageHandler
                             // Регистрируем канал на авто-репост меню «снизу»
                             // после каждого нового поста.
                             _db.SetChannelMenuMessageId(posted.Chat.Id, posted.MessageId);
+                            _logger.LogInformation("[Channel] зарегистрирован {ChatId} ('{Title}') menu={Mid}",
+                                posted.Chat.Id, posted.Chat.Title, posted.MessageId);
                             reply = $"✅ Опубликовано в <code>{BookService.EscapeHtml(arg)}</code>.\n\n" +
                                     $"Канал подписан на авто-меню: после каждого нового поста бот будет переставлять это сообщение вниз. Чтобы это работало, у бота в канале должны быть права «Публиковать» и «Удалять сообщения».";
                             keyboard = null;
@@ -595,10 +597,21 @@ public class MessageHandler
     private async Task HandleChannelPostAsync(ITelegramBotClient bot, Message post, CancellationToken ct)
     {
         var chatId = post.Chat.Id;
-        if (!_db.IsChannelMenuRegistered(chatId)) return;
+        _logger.LogInformation("[Channel] post received chat={ChatId} title={Title} mid={Mid}",
+            chatId, post.Chat.Title, post.MessageId);
+
+        if (!_db.IsChannelMenuRegistered(chatId))
+        {
+            _logger.LogInformation("[Channel] {ChatId} не зарегистрирован — игнорируем", chatId);
+            return;
+        }
 
         var lastMenuId = _db.GetChannelMenuMessageId(chatId);
-        if (lastMenuId == post.MessageId) return; // это и был наш пост-меню
+        if (lastMenuId == post.MessageId)
+        {
+            _logger.LogInformation("[Channel] {ChatId} это наш собственный пост-меню {Mid} — пропуск", chatId, post.MessageId);
+            return; // это и был наш пост-меню
+        }
 
         try
         {
