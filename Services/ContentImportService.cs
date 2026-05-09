@@ -106,11 +106,17 @@ public class ContentImportService
         return added;
     }
 
-    // Парсит обложки выпусков из CDN-ссылок на страницах журналов.
-    // Формат файлов (после декодирования): "2025 Вера и Жизнь - 3 a.jpg"
-    private static readonly Regex IssueFileRe = new(
-        @"(\d{4})\s+.+?\s*-\s*(\d+)\s*a\w?\.(jpg|png)",
+    // Парсит выпуски через flipbook-ссылки. Раньше брали только обложки
+    // с CDN, но обложки на странице есть только у свежих выпусков (~16),
+    // тогда как flipbook-ссылок — десятки и сотни (один link = один
+    // выпуск). У каждой flipbook-страницы в og-тегах есть title и image,
+    // которые и используем как канонический источник.
+    private static readonly Regex FlipbookUrlRe = new(
+        @"https://online\.fliphtml5\.com/[a-z0-9]+/[a-z0-9]+/?",
         RegexOptions.IgnoreCase);
+
+    // Извлекает год из заголовка выпуска ("Тропинка 1998.4", "Вера и Жизнь 2026.1").
+    private static readonly Regex YearInTitleRe = new(@"\b(19|20)\d{2}\b");
 
     public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)
     {
@@ -128,43 +134,49 @@ public class ContentImportService
             var html = await FetchAsync(pageUrl, ct);
             if (string.IsNullOrEmpty(html)) continue;
 
-            // Собираем обложки с позициями
-            var covers = new List<(int Pos, string Year, string Number, string ImgUrl)>();
-            foreach (Match m in Regex.Matches(html,
-                @"https://irp\.cdn-website\.com/[^""]+\.(jpg|png)", RegexOptions.IgnoreCase))
+            // Собираем уникальные flipbook-ссылки. На одной странице журнала
+            // их обычно столько же, сколько и выпусков.
+            var flipUrls = FlipbookUrlRe.Matches(html)
+                .Select(m => m.Value.TrimEnd('/') + "/")  // нормализуем со слешем
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            _logger.LogInformation("[Import {Slug}] flipbook ссылок: {Count}", slug, flipUrls.Count);
+
+            foreach (var flipUrl in flipUrls)
             {
-                var decoded = System.Net.WebUtility.UrlDecode(m.Value.Replace('+', ' '));
-                var fm = IssueFileRe.Match(decoded);
-                if (fm.Success)
-                    covers.Add((m.Index, fm.Groups[1].Value, fm.Groups[2].Value, m.Value));
-            }
+                ct.ThrowIfCancellationRequested();
 
-            // Собираем flipbook-ссылки с позициями
-            var flips = new List<(int Pos, string Url)>();
-            foreach (Match m in Regex.Matches(html,
-                @"https://online\.fliphtml5\.com/[^""\s]+", RegexOptions.IgnoreCase))
-                flips.Add((m.Index, m.Value));
+                var flipHtml = await FetchAsync(flipUrl, ct);
+                if (string.IsNullOrEmpty(flipHtml)) continue;
 
-            var seen = new HashSet<string>();
-            foreach (var (pos, year, number, imgUrl) in covers)
-            {
-                var title = $"{year} №{number}";
-                if (!seen.Add(title)) continue;
+                var meta = ExtractMeta(flipHtml);
+                var title = meta.GetValueOrDefault("og_title")
+                          ?? meta.GetValueOrDefault("title")
+                          ?? "";
+                title = title.Trim();
+                if (string.IsNullOrEmpty(title)) continue;
 
-                // Ближайшая flipbook-ссылка к обложке
-                var flipUrl = flips.Count > 0
-                    ? flips.MinBy(f => Math.Abs(f.Pos - pos)).Url
-                    : pageUrl;
+                var coverUrl = meta.GetValueOrDefault("og_image") ?? "";
+
+                // Год для сортировки. Если в заголовке нет — оставляем null.
+                string? releasedAt = null;
+                var ym = YearInTitleRe.Match(title);
+                if (ym.Success) releasedAt = $"{ym.Value}-01-01";
 
                 if (_db.MagazineIssueExists(magId.Value, title))
                 {
+                    // Идемпотентный апдейт: освежаем url/обложку, если изменились.
                     _db.UpdateMagazineIssueUrl(magId.Value, title, flipUrl);
                     continue;
                 }
 
-                _db.AddMagazineIssue(magId.Value, title, flipUrl, imgUrl, $"{year}-01-01");
+                _db.AddMagazineIssue(magId.Value, title, flipUrl, coverUrl, releasedAt);
                 added++;
-                _logger.LogInformation("[Import] Выпуск: {Slug} {Title} -> {Url}", slug, title, flipUrl);
+                _logger.LogInformation("[Import] Выпуск: {Slug} «{Title}» -> {Url}", slug, title, flipUrl);
+
+                // Не давим на flipbook
+                await Task.Delay(120, ct);
             }
         }
         return added;
