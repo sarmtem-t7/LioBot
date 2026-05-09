@@ -565,6 +565,17 @@ public partial class DatabaseContext
         cmd.ExecuteNonQuery();
     }
 
+    public void UpdateMagazineIssueTitle(long id, string newTitle)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE MagazineIssues SET Title = $t WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$t",  newTitle);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     public List<(long Id, string Title, string Url, string CoverUrl, string? ReleasedAt)> GetMagazineIssues(long magazineId)
     {
         using var conn = CreateConnection();

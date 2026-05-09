@@ -143,15 +143,34 @@ public class ContentImportService
         return null;
     }
 
+    // Каноническое имя журнала для построения заголовка выпуска.
+    private static string CanonicalMagazinePrefix(string slug, string fallback)
+    {
+        return slug switch
+        {
+            "vera"     => "Вера и Жизнь",
+            "tropinka" => "Тропинка",
+            _          => string.IsNullOrWhiteSpace(fallback) ? slug : fallback
+        };
+    }
+
+    // Является ли заголовок «красивым» — то есть содержит имя журнала.
+    // Используется при дедупе: записи с «уродскими» заголовками («2023 №1»)
+    // проигрывают записям с «красивыми» (`Тропинка 2023.1`), даже если у
+    // последних нет обложки — обложку можно подтянуть позже.
+    private static bool IsCanonicalTitle(string title, string slug, string magTitle)
+    {
+        var prefix = CanonicalMagazinePrefix(slug, magTitle);
+        return title.Contains(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
     // Удаляет дубликаты выпусков, у которых совпадает (год, номер) по title.
-    // Из дублей оставляем «лучший»: предпочтение записи с непустой обложкой,
-    // далее — с более длинным/информативным заголовком (типа «Тропинка 2023.1»
-    // против «2023 №1»). Идемпотентно: после первого прогона больше нечего
-    // удалять, повторный вызов вернёт 0.
+    // Ранжирование: сначала записи с «красивым» заголовком (с именем журнала),
+    // потом по наличию обложки, потом по длине заголовка, потом по id.
     public int DeduplicateMagazineIssues()
     {
         var deleted = 0;
-        foreach (var (magId, _, _, _) in _db.GetAllMagazines())
+        foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
         {
             var issues = _db.GetMagazineIssues(magId);
             var keyed = issues
@@ -163,7 +182,8 @@ public class ContentImportService
             {
                 if (group.Count() < 2) continue;
                 var ranked = group
-                    .OrderByDescending(x => string.IsNullOrEmpty(x.Issue.CoverUrl) ? 0 : 1)
+                    .OrderByDescending(x => IsCanonicalTitle(x.Issue.Title, slug, magTitle) ? 1 : 0)
+                    .ThenByDescending(x => string.IsNullOrEmpty(x.Issue.CoverUrl) ? 0 : 1)
                     .ThenByDescending(x => x.Issue.Title.Length)
                     .ThenByDescending(x => x.Issue.Id)
                     .ToList();
@@ -177,6 +197,30 @@ public class ContentImportService
             }
         }
         return deleted;
+    }
+
+    // Приводит заголовки оставшихся выпусков к каноническому формату
+    // «<Журнал> YYYY.N» — на случай, если после дедупа в живых остался
+    // «уродецкий» вариант. Идемпотентно: уже канонические записи не трогает.
+    public int NormalizeMagazineIssueTitles()
+    {
+        var renamed = 0;
+        foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
+        {
+            var prefix = CanonicalMagazinePrefix(slug, magTitle);
+            var issues = _db.GetMagazineIssues(magId);
+            foreach (var issue in issues)
+            {
+                var key = ParseIssueKey(issue.Title);
+                if (!key.HasValue) continue;
+                var canonical = $"{prefix} {key.Value.Year}.{key.Value.Num}";
+                if (issue.Title == canonical) continue;
+                _db.UpdateMagazineIssueTitle(issue.Id, canonical);
+                renamed++;
+                _logger.LogInformation("[Rename] mag={M} «{Old}» -> «{New}»", magId, issue.Title, canonical);
+            }
+        }
+        return renamed;
     }
 
     public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)

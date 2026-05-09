@@ -168,6 +168,13 @@ public class BotPollingService : BackgroundService
                 var dedupCount = _importer.DeduplicateMagazineIssues();
                 if (dedupCount > 0)
                     _logger.LogInformation("[Bootstrap] удалено дублей выпусков: {N}", dedupCount);
+
+                // После дедупа причесываем заголовки в формат «Журнал YYYY.N»,
+                // чтобы выжившие после прошлой версии «уродцы» («2023 №1»)
+                // тоже стали канонически выглядеть.
+                var renamedCount = _importer.NormalizeMagazineIssueTitles();
+                if (renamedCount > 0)
+                    _logger.LogInformation("[Bootstrap] переименовано выпусков: {N}", renamedCount);
             }
             catch (Exception ex)
             {
