@@ -202,6 +202,18 @@ public class MessageHandler
             {
                 reply = BuildHelpMessage();
             }
+            else if (text.StartsWith("/menu"))
+            {
+                // Принудительно переустанавливает нижнюю reply-клавиатуру —
+                // на случай, если пользователь её свернул или клиент потерял.
+                var menuMsg = await bot.SendMessage(chatId,
+                    "🏠 <b>Главное меню</b>\n\nВыбери раздел в меню снизу.",
+                    parseMode: ParseMode.Html,
+                    replyMarkup: MainReplyKeyboard(),
+                    cancellationToken: ct);
+                BotMessageTracker.Track(chatId, menuMsg.MessageId);
+                return;
+            }
             else if (text.StartsWith("/books"))
             {
                 var (pageText, pageKeyboard) = BuildCatalogPage(0, "book");
@@ -1080,22 +1092,8 @@ public class MessageHandler
             navRow.Add(InlineKeyboardButton.WithCallbackData("→", $"catalog:{typeFilter}:{page + 1}"));
         buttons.Add(navRow.ToArray());
 
-        // Переключатели типа — два ряда по 3
-        string Mark(string t, string label) => typeFilter == t ? label + " ✓" : label;
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(Mark("all",   "📚 Все"),     "catalog:all:0"),
-            InlineKeyboardButton.WithCallbackData(Mark("book",  "📖 Книги"),   "catalog:book:0"),
-            InlineKeyboardButton.WithCallbackData(Mark("audio", "🎧 Аудио"),   "catalog:audio:0")
-        });
-        buttons.Add(new[]
-        {
-            InlineKeyboardButton.WithCallbackData(Mark("article",  "📰 Статьи"),  "catalog:article:0"),
-            InlineKeyboardButton.WithCallbackData(Mark("magazine", "📖 Журналы"), "magazines:list"),
-            InlineKeyboardButton.WithCallbackData(Mark("radio",    "🎙 Радио"),   "catalog:radio:0")
-        });
-
-        buttons.Add([InlineKeyboardButton.WithCallbackData("🤖 Подбери мне", "menu:recommend")]);
+        // Переключатели типа и «Подбери мне» убрали — это дублировало
+        // нижнюю reply-клавиатуру, на которой те же разделы.
         buttons.Add([HomeButton()]);
 
         return (text, new InlineKeyboardMarkup(buttons));

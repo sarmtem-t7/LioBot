@@ -98,6 +98,7 @@ public class BotPollingService : BackgroundService
         {
             await _bot.SetMyCommands(new[]
             {
+                new BotCommand { Command = "menu",      Description = "🏠 Главное меню" },
                 new BotCommand { Command = "pick",      Description = "🤖 Подбери материал" },
                 new BotCommand { Command = "books",     Description = "📖 Книги" },
                 new BotCommand { Command = "audio",     Description = "🎧 Аудио" },
