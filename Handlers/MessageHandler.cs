@@ -615,14 +615,45 @@ public class MessageHandler
             _db.SetChannelMenuMessageId(chatId, fresh.MessageId);
 
             if (lastMenuId.HasValue)
-            {
-                try { await bot.DeleteMessage(chatId, lastMenuId.Value, ct); }
-                catch (Exception ex) { _logger.LogDebug(ex, "[Channel] Не удалось удалить старое меню {Id}", lastMenuId); }
-            }
+                await DeleteRegisteredChannelMenu(bot, chatId, lastMenuId.Value, fresh.MessageId, ct);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[Channel] Ошибка авто-репоста меню в {ChatId}", chatId);
+        }
+    }
+
+    // Жёсткий guard: бот удаляет в канале сообщение ТОЛЬКО если его
+    // id совпадает с тем, что записан в ChannelMenus как наше прошлое
+    // меню. Любой другой пост (новость деда, чьё-то сообщение, чей-то
+    // пересланный материал) удалить через этот путь невозможно — он
+    // тут же отвалится по проверке. Это страховка от багов в коде:
+    // даже если выше ошибочно передадут чужой message id, удаление
+    // не произойдёт.
+    private async Task DeleteRegisteredChannelMenu(
+        ITelegramBotClient bot, long chatId, int messageId, int newlyPublishedId, CancellationToken ct)
+    {
+        var registered = _db.GetChannelMenuMessageId(chatId);
+        if (registered != newlyPublishedId)
+        {
+            _logger.LogWarning("[Channel] Guard: registered={Reg} != newly={New}, отказ от удаления {Mid}",
+                registered, newlyPublishedId, messageId);
+            return;
+        }
+        if (registered == messageId)
+        {
+            // Не удаляем актуальное меню — только предыдущее
+            _logger.LogWarning("[Channel] Guard: попытка удалить актуальное меню {Mid}, отказ", messageId);
+            return;
+        }
+
+        try
+        {
+            await bot.DeleteMessage(chatId, messageId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Channel] Не удалось удалить старое меню {Id}", messageId);
         }
     }
 
