@@ -74,15 +74,21 @@ public class BotPollingService : BackgroundService
 {
     private readonly ITelegramBotClient _bot;
     private readonly MessageHandler _handler;
+    private readonly LioBot.Services.ContentImportService _importer;
+    private readonly LioBot.Data.DatabaseContext _db;
     private readonly ILogger<BotPollingService> _logger;
 
     public BotPollingService(
         ITelegramBotClient bot,
         MessageHandler handler,
+        LioBot.Services.ContentImportService importer,
+        LioBot.Data.DatabaseContext db,
         ILogger<BotPollingService> logger)
     {
         _bot = bot;
         _handler = handler;
+        _importer = importer;
+        _db = db;
         _logger = logger;
     }
 
@@ -131,6 +137,37 @@ public class BotPollingService : BackgroundService
             },
             DropPendingUpdates = true
         };
+
+        // Self-healing bootstrap: если у журналов мало выпусков, тихо
+        // запускаем переимпорт в фоне. Срабатывает после первого деплоя
+        // с новым flipbook-парсером, дальше становится no-op.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var veraId = _db.GetMagazineIdBySlug("vera");
+                var tropId = _db.GetMagazineIdBySlug("tropinka");
+                var veraCount = veraId.HasValue ? _db.GetMagazineIssues(veraId.Value).Count : 0;
+                var tropCount = tropId.HasValue ? _db.GetMagazineIssues(tropId.Value).Count : 0;
+                _logger.LogInformation("[Bootstrap] Журналы: vera={V}, tropinka={T}", veraCount, tropCount);
+
+                if (veraCount < 100 || tropCount < 50)
+                {
+                    if (_importer.IsRunning)
+                    {
+                        _logger.LogInformation("[Bootstrap] импорт уже идёт — пропуск");
+                        return;
+                    }
+                    _logger.LogInformation("[Bootstrap] запускаю переимпорт выпусков (vera<100 OR tropinka<50)");
+                    var added = await _importer.ImportMagazineIssuesAsync(stoppingToken);
+                    _logger.LogInformation("[Bootstrap] добавлено выпусков: {Added}", added);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Bootstrap] переимпорт выпусков упал");
+            }
+        }, stoppingToken);
 
         await _bot.ReceiveAsync(
             updateHandler:  _handler.HandleUpdateAsync,
