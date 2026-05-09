@@ -315,6 +315,79 @@ public class MessageHandler
                     }
                 }
             }
+            else if (text.StartsWith("/magstat"))
+            {
+                if (_adminIds.Count > 0 && !_adminIds.Contains(telegramUser.Id))
+                {
+                    reply = "Эта команда доступна только администраторам.";
+                }
+                else
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("📔 <b>Журналы в БД, по годам:</b>\n");
+                    foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
+                    {
+                        var issues = _db.GetMagazineIssues(magId);
+                        if (issues.Count == 0) continue;
+                        var byYear = issues
+                            .Select(i => ExtractIssueYear(i.Title, i.ReleasedAt) ?? 0)
+                            .GroupBy(y => y)
+                            .OrderByDescending(g => g.Key);
+                        sb.AppendLine($"<b>{BookService.EscapeHtml(magTitle)}</b> — всего {issues.Count}");
+                        foreach (var g in byYear)
+                        {
+                            var label = g.Key == 0 ? "—" : g.Key.ToString();
+                            sb.Append($"  {label}:{g.Count()}");
+                        }
+                        sb.AppendLine();
+                        sb.AppendLine();
+                    }
+                    reply = sb.ToString();
+                }
+            }
+            else if (text.StartsWith("/magscan"))
+            {
+                if (_adminIds.Count > 0 && !_adminIds.Contains(telegramUser.Id))
+                {
+                    reply = "Эта команда доступна только администраторам.";
+                }
+                else
+                {
+                    var arg = text.Replace("/magscan", "").Trim().ToLowerInvariant();
+                    var slug = string.IsNullOrEmpty(arg) ? "vera" : arg;
+                    var tmp = await bot.SendMessage(chatId, $"🔍 Сканирую /zurnaly/{slug}...", cancellationToken: ct);
+                    BotMessageTracker.Track(chatId, tmp.MessageId);
+
+                    using var http = new HttpClient();
+                    http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; LioBot-Importer/1.0)");
+                    string html = "";
+                    reply = "";
+                    try { html = await http.GetStringAsync($"https://www.lio-int.com/zurnaly/{slug}", ct); }
+                    catch (Exception ex) { reply = $"❌ Не удалось получить страницу: {ex.Message}"; }
+
+                    if (!string.IsNullOrEmpty(html))
+                    {
+                        var flips = System.Text.RegularExpressions.Regex.Matches(
+                            html, @"https://online\.fliphtml5\.com/[a-z0-9]+/[a-z0-9]+/?",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        var unique = flips.Select(m => m.Value).Distinct().Count();
+
+                        var yearMatches = System.Text.RegularExpressions.Regex.Matches(
+                            html, @"\b(19[89]\d|20[0-2]\d)\b");
+                        var years = yearMatches.Select(m => m.Value).Distinct().OrderBy(y => y).ToList();
+
+                        var anchors = System.Text.RegularExpressions.Regex.Matches(
+                            html, @"u_Y(19[89]\d|20[0-2]\d)");
+                        var anchorYears = anchors.Select(m => m.Groups[1].Value).Distinct().OrderBy(y => y).ToList();
+
+                        reply = $"🔍 <b>/zurnaly/{slug}</b>\n\n" +
+                            $"Размер HTML: {html.Length:N0}\n" +
+                            $"Уникальных flipbook ссылок: <b>{unique}</b>\n" +
+                            $"Годов в тексте: {years.Count} ({string.Join(", ", years)})\n" +
+                            $"Якорей-годов (u_Y…): {anchorYears.Count} ({string.Join(", ", anchorYears)})";
+                    }
+                }
+            }
             else if (text.StartsWith("/menu"))
             {
                 // Принудительно переустанавливает нижнюю reply-клавиатуру —
