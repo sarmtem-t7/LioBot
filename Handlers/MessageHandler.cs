@@ -138,11 +138,16 @@ public class MessageHandler
         var message = update.Message;
         if (message?.Text is null) return;
 
-        // Бот работает только в приватных чатах. В группах/каналах он
-        // ничего не отвечает и не удаляет — даже если ему дали права
-        // админа. Канальная навигация делается через deep-link
-        // /start <section> к боту в личке.
-        if (message.Chat.Type != ChatType.Private) return;
+        // Бот работает только в приватных чатах. Исключение — супергруппы/группы,
+        // зарегистрированные как «канал-витрина» через /channelpost: там бот не
+        // ведёт диалог, но переставляет меню «снизу» после каждого нового поста
+        // (то же поведение, что у настоящих каналов через channel_post).
+        if (message.Chat.Type != ChatType.Private)
+        {
+            if (_db.IsChannelMenuRegistered(message.Chat.Id))
+                await HandleChannelPostAsync(bot, message, ct);
+            return;
+        }
 
         var telegramUser = message.From!;
         RegisterOrUpdateUser(telegramUser);
@@ -597,8 +602,8 @@ public class MessageHandler
     private async Task HandleChannelPostAsync(ITelegramBotClient bot, Message post, CancellationToken ct)
     {
         var chatId = post.Chat.Id;
-        _logger.LogInformation("[Channel] post received chat={ChatId} title={Title} mid={Mid}",
-            chatId, post.Chat.Title, post.MessageId);
+        _logger.LogInformation("[Channel] post received chat={ChatId} title={Title} mid={Mid} thread={Thread}",
+            chatId, post.Chat.Title, post.MessageId, post.MessageThreadId);
 
         if (!_db.IsChannelMenuRegistered(chatId))
         {
@@ -618,11 +623,12 @@ public class MessageHandler
             var me = await bot.GetMe(ct);
             var (text, keyboard) = BuildChannelMenuPost(me.Username!);
 
-            // Сначала шлём новое меню, потом удаляем старое — так у
-            // подписчиков нет «дыры» между удалением и постингом.
+            // Постим в ту же ветку (топик), где появился пост — иначе меню
+            // зависнет в General и не будет «снизу» относительно нового поста.
             var fresh = await bot.SendMessage(chatId, text,
                 parseMode: ParseMode.Html,
                 replyMarkup: keyboard,
+                messageThreadId: post.MessageThreadId,
                 linkPreviewOptions: new() { IsDisabled = true },
                 cancellationToken: ct);
             _db.SetChannelMenuMessageId(chatId, fresh.MessageId);
