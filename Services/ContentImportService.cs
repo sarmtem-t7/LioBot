@@ -118,6 +118,67 @@ public class ContentImportService
     // Извлекает год из заголовка выпуска ("Тропинка 1998.4", "Вера и Жизнь 2026.1").
     private static readonly Regex YearInTitleRe = new(@"\b(19|20)\d{2}\b");
 
+    // Достаёт пару (год, номер) из заголовка любого формата:
+    //   «Тропинка 2023.1»          → (2023, 1)
+    //   «2023 №1»                  → (2023, 1)
+    //   «Вера и Жизнь 2026.1»      → (2026, 1)
+    //   «1995 Вера и Жизнь № 4»    → (1995, 4)
+    // Возвращает null, если оба числа извлечь не удалось.
+    private static readonly Regex IssueKeyDotRe = new(@"(?<y>(?:19|20)\d{2})\s*\.\s*(?<n>\d+)");
+    private static readonly Regex IssueKeyHashRe = new(@"(?<y>(?:19|20)\d{2}).{0,30}?[№#]\s*(?<n>\d+)");
+    private static readonly Regex IssueKeyDashRe = new(@"(?<y>(?:19|20)\d{2})\s*[-–—]\s*(?<n>\d+)");
+
+    private static (int Year, int Num)? ParseIssueKey(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        foreach (var rx in new[] { IssueKeyDotRe, IssueKeyHashRe, IssueKeyDashRe })
+        {
+            var m = rx.Match(title);
+            if (m.Success
+                && int.TryParse(m.Groups["y"].Value, out var y)
+                && int.TryParse(m.Groups["n"].Value, out var n)
+                && n is > 0 and < 100)
+                return (y, n);
+        }
+        return null;
+    }
+
+    // Удаляет дубликаты выпусков, у которых совпадает (год, номер) по title.
+    // Из дублей оставляем «лучший»: предпочтение записи с непустой обложкой,
+    // далее — с более длинным/информативным заголовком (типа «Тропинка 2023.1»
+    // против «2023 №1»). Идемпотентно: после первого прогона больше нечего
+    // удалять, повторный вызов вернёт 0.
+    public int DeduplicateMagazineIssues()
+    {
+        var deleted = 0;
+        foreach (var (magId, _, _, _) in _db.GetAllMagazines())
+        {
+            var issues = _db.GetMagazineIssues(magId);
+            var keyed = issues
+                .Select(i => new { Issue = i, Key = ParseIssueKey(i.Title) })
+                .Where(x => x.Key.HasValue)
+                .ToList();
+
+            foreach (var group in keyed.GroupBy(x => x.Key!.Value))
+            {
+                if (group.Count() < 2) continue;
+                var ranked = group
+                    .OrderByDescending(x => string.IsNullOrEmpty(x.Issue.CoverUrl) ? 0 : 1)
+                    .ThenByDescending(x => x.Issue.Title.Length)
+                    .ThenByDescending(x => x.Issue.Id)
+                    .ToList();
+                foreach (var dup in ranked.Skip(1))
+                {
+                    _db.DeleteMagazineIssue(dup.Issue.Id);
+                    deleted++;
+                    _logger.LogInformation("[Dedup] Удалён дубль mag={M} ({Y}/{N}) id={Id} «{T}»",
+                        magId, group.Key.Year, group.Key.Num, dup.Issue.Id, dup.Issue.Title);
+                }
+            }
+        }
+        return deleted;
+    }
+
     public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)
     {
         var slugs = new[] { "vera", "tropinka" };

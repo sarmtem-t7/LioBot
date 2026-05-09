@@ -555,6 +555,16 @@ public partial class DatabaseContext
         cmd.ExecuteNonQuery();
     }
 
+    public void DeleteMagazineIssue(long id)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM MagazineIssues WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
     public List<(long Id, string Title, string Url, string CoverUrl, string? ReleasedAt)> GetMagazineIssues(long magazineId)
     {
         using var conn = CreateConnection();

@@ -162,6 +162,12 @@ public class BotPollingService : BackgroundService
                     var added = await _importer.ImportMagazineIssuesAsync(stoppingToken);
                     _logger.LogInformation("[Bootstrap] добавлено выпусков: {Added}", added);
                 }
+
+                // Дедуп: убираем пары «2023 №1» + «Тропинка 2023.1», возникшие
+                // на стыке старого парсера обложек и нового flipbook-парсера.
+                var dedupCount = _importer.DeduplicateMagazineIssues();
+                if (dedupCount > 0)
+                    _logger.LogInformation("[Bootstrap] удалено дублей выпусков: {N}", dedupCount);
             }
             catch (Exception ex)
             {
