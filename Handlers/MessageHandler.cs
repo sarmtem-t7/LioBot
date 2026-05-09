@@ -355,7 +355,9 @@ public class MessageHandler
                 {
                     var arg = text.Replace("/magscan", "").Trim().ToLowerInvariant();
                     var slug = string.IsNullOrEmpty(arg) ? "vera" : arg;
-                    var tmp = await bot.SendMessage(chatId, $"🔍 Сканирую /zurnaly/{slug}...", cancellationToken: ct);
+                    var tmp = await bot.SendMessage(chatId,
+                        $"🔍 Сканирую /zurnaly/{slug}, парсю каждый flipbook…\nЭто займёт ~30-60 секунд.",
+                        cancellationToken: ct);
                     BotMessageTracker.Track(chatId, tmp.MessageId);
 
                     using var http = new HttpClient();
@@ -367,24 +369,59 @@ public class MessageHandler
 
                     if (!string.IsNullOrEmpty(html))
                     {
-                        var flips = System.Text.RegularExpressions.Regex.Matches(
+                        var flipUrls = System.Text.RegularExpressions.Regex.Matches(
                             html, @"https://online\.fliphtml5\.com/[a-z0-9]+/[a-z0-9]+/?",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                            .Select(m => m.Value.TrimEnd('/') + "/")
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        // Якоря-годы в HTML — это содержание страницы по разделам.
+                        var anchorYears = System.Text.RegularExpressions.Regex.Matches(
+                            html, @"u_Y(19[89]\d|20[0-2]\d)")
+                            .Select(m => m.Groups[1].Value)
+                            .Distinct()
+                            .OrderBy(y => y)
+                            .ToList();
+
+                        // Тащим og:title с каждого flipbook, группируем по году
+                        var titleYearRe = new System.Text.RegularExpressions.Regex(@"\b(19[89]\d|20[0-2]\d)\b");
+                        var ogTitleRe = new System.Text.RegularExpressions.Regex(
+                            @"<meta[^>]+property=[""']og:title[""'][^>]+content=[""']([^""']+)",
                             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        var unique = flips.Select(m => m.Value).Distinct().Count();
+                        var byYear = new SortedDictionary<int, int>();
+                        var unparsed = 0;
+                        var noTitle = 0;
+                        var fetchFails = 0;
 
-                        var yearMatches = System.Text.RegularExpressions.Regex.Matches(
-                            html, @"\b(19[89]\d|20[0-2]\d)\b");
-                        var years = yearMatches.Select(m => m.Value).Distinct().OrderBy(y => y).ToList();
+                        foreach (var fu in flipUrls)
+                        {
+                            try
+                            {
+                                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                                cts.CancelAfter(TimeSpan.FromSeconds(10));
+                                var fhtml = await http.GetStringAsync(fu, cts.Token);
+                                var titleM = ogTitleRe.Match(fhtml);
+                                if (!titleM.Success) { noTitle++; continue; }
+                                var t = titleM.Groups[1].Value;
+                                var ym = titleYearRe.Match(t);
+                                if (!ym.Success) { unparsed++; continue; }
+                                var y = int.Parse(ym.Value);
+                                byYear[y] = byYear.GetValueOrDefault(y, 0) + 1;
+                            }
+                            catch { fetchFails++; }
+                            await Task.Delay(80, ct);
+                        }
 
-                        var anchors = System.Text.RegularExpressions.Regex.Matches(
-                            html, @"u_Y(19[89]\d|20[0-2]\d)");
-                        var anchorYears = anchors.Select(m => m.Groups[1].Value).Distinct().OrderBy(y => y).ToList();
+                        var byYearStr = string.Join(", ",
+                            byYear.OrderByDescending(kv => kv.Key).Select(kv => $"{kv.Key}:{kv.Value}"));
 
                         reply = $"🔍 <b>/zurnaly/{slug}</b>\n\n" +
-                            $"Размер HTML: {html.Length:N0}\n" +
-                            $"Уникальных flipbook ссылок: <b>{unique}</b>\n" +
-                            $"Годов в тексте: {years.Count} ({string.Join(", ", years)})\n" +
-                            $"Якорей-годов (u_Y…): {anchorYears.Count} ({string.Join(", ", anchorYears)})";
+                            $"HTML: {html.Length:N0} байт\n" +
+                            $"Уникальных flipbook ссылок: <b>{flipUrls.Count}</b>\n" +
+                            $"Якорей u_Y…: {string.Join(", ", anchorYears)}\n\n" +
+                            $"<b>Найдено в og:title по годам:</b>\n{byYearStr}\n\n" +
+                            $"Без og:title: {noTitle}, без года в title: {unparsed}, fetch ошибок: {fetchFails}";
                     }
                 }
             }
