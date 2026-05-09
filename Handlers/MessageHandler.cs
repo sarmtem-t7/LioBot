@@ -132,6 +132,12 @@ public class MessageHandler
         var message = update.Message;
         if (message?.Text is null) return;
 
+        // Бот работает только в приватных чатах. В группах/каналах он
+        // ничего не отвечает и не удаляет — даже если ему дали права
+        // админа. Канальная навигация делается через deep-link
+        // /start <section> к боту в личке.
+        if (message.Chat.Type != ChatType.Private) return;
+
         var telegramUser = message.From!;
         RegisterOrUpdateUser(telegramUser);
 
@@ -162,24 +168,62 @@ public class MessageHandler
 
             if (text.StartsWith("/start"))
             {
+                // Парсим deep-link param: «/start books», «/start articles» и т.п.
+                // Используется кнопками в канальной витрине — открывает бота
+                // сразу в нужном разделе, минуя приветствие.
+                var startArg = text.Length > 6 ? text[6..].Trim().ToLowerInvariant() : "";
                 var existing = _db.GetUserByTelegramId(telegramUser.Id);
-                if (existing is null || !existing.OnboardingDone)
+                var needOnboarding = existing is null || !existing.OnboardingDone;
+
+                if (needOnboarding && string.IsNullOrEmpty(startArg))
                 {
                     reply = BuildOnboardingStageMessage(telegramUser.FirstName);
                     keyboard = OnboardingStageKeyboard();
                 }
                 else
                 {
-                    reply = BuildWelcomeMessage(telegramUser.FirstName);
-                    keyboard = null;
-                    // Перевыставляем reply-клавиатуру (на случай рестарта бота
-                    // или если пользователь свернул её)
-                    var welcomeMsg = await bot.SendMessage(chatId, reply,
+                    // Если пришли по deep-link, считаем что онбординг можно
+                    // отложить — пользователь хочет сразу в раздел.
+                    if (needOnboarding) _db.MarkOnboardingDone(telegramUser.Id);
+
+                    // Сначала переустановим reply-клавиатуру коротким сообщением,
+                    // потом откроем нужный раздел (или приветствие).
+                    var greeting = string.IsNullOrEmpty(startArg)
+                        ? BuildWelcomeMessage(telegramUser.FirstName)
+                        : "👋 Открываю раздел…";
+                    var welcomeMsg = await bot.SendMessage(chatId, greeting,
                         parseMode: ParseMode.Html,
                         replyMarkup: MainReplyKeyboard(),
                         cancellationToken: ct);
                     BotMessageTracker.Track(chatId, welcomeMsg.MessageId);
-                    return;
+
+                    if (!string.IsNullOrEmpty(startArg))
+                    {
+                        switch (startArg)
+                        {
+                            case "books":     { var (t, k) = BuildCatalogPage(0, "book");    reply = t; keyboard = k; break; }
+                            case "audio":     { var (t, k) = BuildCatalogPage(0, "audio");   reply = t; keyboard = k; break; }
+                            case "articles":  { var (t, k) = BuildCatalogPage(0, "article"); reply = t; keyboard = k; break; }
+                            case "radio":     { var (t, k) = BuildCatalogPage(0, "radio");   reply = t; keyboard = k; break; }
+                            case "magazines": { var (t, k) = BuildMagazinesList();           reply = t; keyboard = k; break; }
+                            case "authors":   { var (t, k) = BuildAuthorsPage(0);            reply = t; keyboard = k; break; }
+                            case "pick":
+                                await SendRecommendationFresh(bot, chatId, telegramUser.Id,
+                                    "посоветуй материал", historyLimit: 0, deleteMessageId: null, ct);
+                                return;
+                            case "search":
+                                reply = "🔍 Напиши слово или фразу — найду материалы по ним.";
+                                keyboard = null;
+                                break;
+                            default:
+                                // Неизвестный раздел — игнорируем, оставляем приветствие
+                                return;
+                        }
+                    }
+                    else
+                    {
+                        return;
+                    }
                 }
             }
             else if (text.StartsWith("/onboarding"))
@@ -201,6 +245,39 @@ public class MessageHandler
             else if (text.StartsWith("/help"))
             {
                 reply = BuildHelpMessage();
+            }
+            else if (text.StartsWith("/channelpost"))
+            {
+                if (_adminIds.Count > 0 && !_adminIds.Contains(telegramUser.Id))
+                {
+                    reply = "Эта команда доступна только администраторам.";
+                }
+                else
+                {
+                    var me = await bot.GetMe(ct);
+                    var username = me.Username;
+                    InlineKeyboardButton DeepLink(string label, string section) =>
+                        InlineKeyboardButton.WithUrl(label, $"https://t.me/{username}?start={section}");
+                    var postKeyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[] { DeepLink("📖 Книги",   "books"),     DeepLink("🎧 Аудио",     "audio"),     DeepLink("📰 Статьи", "articles") },
+                        new[] { DeepLink("🎙 Радио",   "radio"),     DeepLink("📔 Журналы",   "magazines"), DeepLink("👤 Авторы", "authors")  },
+                        new[] { DeepLink("🤖 Подбери", "pick"),      DeepLink("🔍 Поиск",     "search") }
+                    });
+                    var postText =
+                        "📚 <b>Каталог Лио</b>\n\n" +
+                        "Книги, аудиокниги, статьи, журналы и христианское радио — всё в одном месте.\n\n" +
+                        "Нажми на любой раздел — откроется приватный чат с ботом.";
+                    var postMsg = await bot.SendMessage(chatId, postText,
+                        parseMode: ParseMode.Html,
+                        replyMarkup: postKeyboard,
+                        linkPreviewOptions: new() { IsDisabled = true },
+                        cancellationToken: ct);
+                    BotMessageTracker.Track(chatId, postMsg.MessageId);
+
+                    reply = "👆 Перешли это сообщение в канал и закрепи его. Подписчики смогут открывать любой раздел в личке с ботом.";
+                    keyboard = null;
+                }
             }
             else if (text.StartsWith("/menu"))
             {
@@ -465,6 +542,14 @@ public class MessageHandler
 
     private async Task HandleCallbackQueryAsync(ITelegramBotClient bot, CallbackQuery query, CancellationToken ct)
     {
+        // Колбэки из каналов/групп игнорируем — бот должен жить только
+        // в приватных чатах. Подписчик попадает в DM через deep-link.
+        if (query.Message?.Chat.Type != ChatType.Private)
+        {
+            try { await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct); } catch { /* not critical */ }
+            return;
+        }
+
         var chatId    = query.Message!.Chat.Id;
         var messageId = query.Message.MessageId;
         var user      = query.From;
