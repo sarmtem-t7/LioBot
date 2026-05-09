@@ -124,14 +124,17 @@ public class ContentImportService
     //   «Вера и Жизнь 2026.1»      → (2026, 1)
     //   «1995 Вера и Жизнь № 4»    → (1995, 4)
     // Возвращает null, если оба числа извлечь не удалось.
-    private static readonly Regex IssueKeyDotRe = new(@"(?<y>(?:19|20)\d{2})\s*\.\s*(?<n>\d+)");
-    private static readonly Regex IssueKeyHashRe = new(@"(?<y>(?:19|20)\d{2}).{0,30}?[№#]\s*(?<n>\d+)");
-    private static readonly Regex IssueKeyDashRe = new(@"(?<y>(?:19|20)\d{2})\s*[-–—]\s*(?<n>\d+)");
+    private static readonly Regex IssueKeyDotRe       = new(@"(?<y>(?:19|20)\d{2})\s*\.\s*(?<n>\d+)");
+    private static readonly Regex IssueKeyHashRe      = new(@"(?<y>(?:19|20)\d{2}).{0,30}?[№#]\s*(?<n>\d+)");
+    private static readonly Regex IssueKeyDashRe      = new(@"(?<y>(?:19|20)\d{2})\s*[-–—]\s*(?<n>\d+)");
+    // Обратный формат: «1.1989» — номер.год. Используется в og:description
+    // у старых выпусков «Веры и Жизнь».
+    private static readonly Regex IssueKeyNumDotYearRe = new(@"^\s*(?<n>\d+)\s*\.\s*(?<y>(?:19|20)\d{2})\s*$");
 
     private static (int Year, int Num)? ParseIssueKey(string title)
     {
         if (string.IsNullOrWhiteSpace(title)) return null;
-        foreach (var rx in new[] { IssueKeyDotRe, IssueKeyHashRe, IssueKeyDashRe })
+        foreach (var rx in new[] { IssueKeyDotRe, IssueKeyHashRe, IssueKeyDashRe, IssueKeyNumDotYearRe })
         {
             var m = rx.Match(title);
             if (m.Success
@@ -199,6 +202,25 @@ public class ContentImportService
         return deleted;
     }
 
+    // Удаляет MagazineIssues с заголовком, у которого не парсится (год, номер).
+    // Используется как одноразовая чистка перед re-import: старый импорт мог
+    // напихать записей с title="Вера и Жизнь" (без даты), и они мешают новому
+    // импорту нормально проставить канонические заголовки.
+    public int PurgeUnparseableMagazineIssues()
+    {
+        var deleted = 0;
+        foreach (var (magId, _, _, _) in _db.GetAllMagazines())
+        {
+            foreach (var issue in _db.GetMagazineIssues(magId))
+            {
+                if (ParseIssueKey(issue.Title).HasValue) continue;
+                _db.DeleteMagazineIssue(issue.Id);
+                deleted++;
+            }
+        }
+        return deleted;
+    }
+
     // Приводит заголовки оставшихся выпусков к каноническому формату
     // «<Журнал> YYYY.N» — на случай, если после дедупа в живых остался
     // «уродецкий» вариант. Идемпотентно: уже канонические записи не трогает.
@@ -256,22 +278,28 @@ public class ContentImportService
                 if (string.IsNullOrEmpty(flipHtml)) continue;
 
                 var meta = ExtractMeta(flipHtml);
-                var title = meta.GetValueOrDefault("og_title")
-                          ?? meta.GetValueOrDefault("title")
-                          ?? "";
-                title = title.Trim();
-                if (string.IsNullOrEmpty(title)) continue;
+                var ogTitle = (meta.GetValueOrDefault("og_title") ?? "").Trim();
+                var ogDesc  = (meta.GetValueOrDefault("og_description") ?? "").Trim();
+
+                // У старых выпусков «Веры и Жизнь» og:title = «Вера и Жизнь»
+                // (без года), а год+номер сидит в og:description = «1.1989».
+                // У современных og:title уже «Вера и Жизнь 2026.1». Поэтому
+                // пробуем оба источника, выбираем тот, где key распарсилась.
+                var key = ParseIssueKey(ogTitle) ?? ParseIssueKey(ogDesc);
+
+                // Канонический title: «<Журнал> Y.N». Если ключ не извлёкся,
+                // оставляем что есть из og:title.
+                var prefix = CanonicalMagazinePrefix(slug, ogTitle);
+                var title = key.HasValue
+                    ? $"{prefix} {key.Value.Year}.{key.Value.Num}"
+                    : (string.IsNullOrEmpty(ogTitle) ? slug : ogTitle);
 
                 var coverUrl = meta.GetValueOrDefault("og_image") ?? "";
 
-                // Год для сортировки. Если в заголовке нет — оставляем null.
-                string? releasedAt = null;
-                var ym = YearInTitleRe.Match(title);
-                if (ym.Success) releasedAt = $"{ym.Value}-01-01";
+                string? releasedAt = key.HasValue ? $"{key.Value.Year}-01-01" : null;
 
                 if (_db.MagazineIssueExists(magId.Value, title))
                 {
-                    // Идемпотентный апдейт: освежаем url/обложку, если изменились.
                     _db.UpdateMagazineIssueUrl(magId.Value, title, flipUrl);
                     continue;
                 }
@@ -280,7 +308,6 @@ public class ContentImportService
                 added++;
                 _logger.LogInformation("[Import] Выпуск: {Slug} «{Title}» -> {Url}", slug, title, flipUrl);
 
-                // Не давим на flipbook
                 await Task.Delay(120, ct);
             }
         }

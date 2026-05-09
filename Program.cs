@@ -151,14 +151,22 @@ public class BotPollingService : BackgroundService
                 var tropCount = tropId.HasValue ? _db.GetMagazineIssues(tropId.Value).Count : 0;
                 _logger.LogInformation("[Bootstrap] Журналы: vera={V}, tropinka={T}", veraCount, tropCount);
 
-                if (veraCount < 100 || tropCount < 50)
+                // Реимпорт нужен, если в каталоге явно мало выпусков (либо
+                // парсер был обновлён и старые «уродцы» без года/номера не
+                // дают новому импорту проставить канонические заголовки —
+                // их сначала чистим).
+                if (veraCount < 250 || tropCount < 100)
                 {
                     if (_importer.IsRunning)
                     {
                         _logger.LogInformation("[Bootstrap] импорт уже идёт — пропуск");
                         return;
                     }
-                    _logger.LogInformation("[Bootstrap] запускаю переимпорт выпусков (vera<100 OR tropinka<50)");
+                    var purged = _importer.PurgeUnparseableMagazineIssues();
+                    if (purged > 0)
+                        _logger.LogInformation("[Bootstrap] удалено непарсимых выпусков: {N}", purged);
+
+                    _logger.LogInformation("[Bootstrap] запускаю переимпорт выпусков");
                     var added = await _importer.ImportMagazineIssuesAsync(stoppingToken);
                     _logger.LogInformation("[Bootstrap] добавлено выпусков: {Added}", added);
                 }
