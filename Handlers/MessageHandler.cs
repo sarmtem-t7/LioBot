@@ -212,12 +212,12 @@ public class MessageHandler
                     {
                         switch (startArg)
                         {
-                            case "books":     { var (t, k) = BuildCatalogPage(0, "book");    reply = t; keyboard = k; break; }
-                            case "audio":     { var (t, k) = BuildCatalogPage(0, "audio");   reply = t; keyboard = k; break; }
-                            case "articles":  { var (t, k) = BuildCatalogPage(0, "article"); reply = t; keyboard = k; break; }
-                            case "radio":     { var (t, k) = BuildCatalogPage(0, "radio");   reply = t; keyboard = k; break; }
-                            case "magazines": { var (t, k) = BuildMagazinesList();           reply = t; keyboard = k; break; }
-                            case "authors":   { var (t, k) = BuildAuthorsPage(0);            reply = t; keyboard = k; break; }
+                            case "books":     { var (t, k) = BuildCatalogPage(0, "book",    telegramUser.Id); reply = t; keyboard = k; break; }
+                            case "audio":     { var (t, k) = BuildCatalogPage(0, "audio",   telegramUser.Id); reply = t; keyboard = k; break; }
+                            case "articles":  { var (t, k) = BuildCatalogPage(0, "article", telegramUser.Id); reply = t; keyboard = k; break; }
+                            case "radio":     { var (t, k) = BuildCatalogPage(0, "radio",   telegramUser.Id); reply = t; keyboard = k; break; }
+                            case "magazines": { var (t, k) = BuildMagazinesList(telegramUser.Id);             reply = t; keyboard = k; break; }
+                            case "authors":   { var (t, k) = BuildAuthorsPage(0);                              reply = t; keyboard = k; break; }
                             case "pick":
                                 await SendRecommendationFresh(bot, chatId, telegramUser.Id,
                                     "посоветуй материал", historyLimit: 0, deleteMessageId: null, ct);
@@ -325,7 +325,7 @@ public class MessageHandler
                 {
                     var sb = new System.Text.StringBuilder();
                     sb.AppendLine("📔 <b>Журналы в БД, по годам:</b>\n");
-                    foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
+                    foreach (var (magId, slug, magTitle, _, _) in _db.GetAllMagazines())
                     {
                         var issues = _db.GetMagazineIssues(magId);
                         if (issues.Count == 0) continue;
@@ -439,27 +439,27 @@ public class MessageHandler
             }
             else if (text.StartsWith("/books"))
             {
-                var (pageText, pageKeyboard) = BuildCatalogPage(0, "book");
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "book", telegramUser.Id);
                 reply = pageText; keyboard = pageKeyboard;
             }
             else if (text.StartsWith("/audio"))
             {
-                var (pageText, pageKeyboard) = BuildCatalogPage(0, "audio");
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "audio", telegramUser.Id);
                 reply = pageText; keyboard = pageKeyboard;
             }
             else if (text.StartsWith("/articles"))
             {
-                var (pageText, pageKeyboard) = BuildCatalogPage(0, "article");
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "article", telegramUser.Id);
                 reply = pageText; keyboard = pageKeyboard;
             }
             else if (text.StartsWith("/radio"))
             {
-                var (pageText, pageKeyboard) = BuildCatalogPage(0, "radio");
+                var (pageText, pageKeyboard) = BuildCatalogPage(0, "radio", telegramUser.Id);
                 reply = pageText; keyboard = pageKeyboard;
             }
             else if (text.StartsWith("/magazines"))
             {
-                var (pageText, pageKeyboard) = BuildMagazinesList();
+                var (pageText, pageKeyboard) = BuildMagazinesList(telegramUser.Id);
                 reply = pageText; keyboard = pageKeyboard;
             }
             else if (text.StartsWith("/authors"))
@@ -594,31 +594,31 @@ public class MessageHandler
                 {
                     case NavBooks:
                     {
-                        var (t, k) = BuildCatalogPage(0, "book");
+                        var (t, k) = BuildCatalogPage(0, "book", telegramUser.Id);
                         reply = t; keyboard = k;
                         break;
                     }
                     case NavAudio:
                     {
-                        var (t, k) = BuildCatalogPage(0, "audio");
+                        var (t, k) = BuildCatalogPage(0, "audio", telegramUser.Id);
                         reply = t; keyboard = k;
                         break;
                     }
                     case NavArticles:
                     {
-                        var (t, k) = BuildCatalogPage(0, "article");
+                        var (t, k) = BuildCatalogPage(0, "article", telegramUser.Id);
                         reply = t; keyboard = k;
                         break;
                     }
                     case NavRadio:
                     {
-                        var (t, k) = BuildCatalogPage(0, "radio");
+                        var (t, k) = BuildCatalogPage(0, "radio", telegramUser.Id);
                         reply = t; keyboard = k;
                         break;
                     }
                     case NavMagazines:
                     {
-                        var (t, k) = BuildMagazinesList();
+                        var (t, k) = BuildMagazinesList(telegramUser.Id);
                         reply = t; keyboard = k;
                         break;
                     }
@@ -829,7 +829,7 @@ public class MessageHandler
             // ── Журналы: список изданий и выпуски ─────────────────────
             if (data == "magazines:list")
             {
-                var (text, kb) = BuildMagazinesList();
+                var (text, kb) = BuildMagazinesList(user.Id);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
@@ -896,7 +896,7 @@ public class MessageHandler
                 var type  = parts.Length > 1 ? parts[1] : "all";
                 var page  = parts.Length > 2 && int.TryParse(parts[2], out var p) ? p : 0;
 
-                var (pageText, pageKeyboard) = BuildCatalogPage(page, type);
+                var (pageText, pageKeyboard) = BuildCatalogPage(page, type, user.Id);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await ReplaceMessage(bot, chatId, messageId, pageText, pageKeyboard, ct);
                 return;
@@ -1081,6 +1081,46 @@ public class MessageHandler
                 return;
             }
 
+            // ── Профиль: редактировать языки ──────────────────────────
+            if (data == "profile:editlangs")
+            {
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    "🌐 <b>Языки</b>\n\nОтметь языки, на которых хочешь видеть материалы. " +
+                    "Если ничего не выбрано — показываем всё подряд.",
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileLanguagesKeyboard(user.Id),
+                    cancellationToken: ct);
+                return;
+            }
+
+            // ── Профиль: тоггл языка ──────────────────────────────────
+            if (data.StartsWith("profile:lang:"))
+            {
+                var code = data[13..];
+                _db.ToggleLanguage(user.Id, code);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                try
+                {
+                    await bot.EditMessageReplyMarkup(chatId, messageId,
+                        ProfileLanguagesKeyboard(user.Id), cancellationToken: ct);
+                }
+                catch { /* без изменений — пропускаем */ }
+                return;
+            }
+
+            // ── Профиль: сохранить языки → обратно к профилю ──────────
+            if (data == "profile:savelangs")
+            {
+                await bot.AnswerCallbackQuery(query.Id, "Сохранено", cancellationToken: ct);
+                await bot.EditMessageText(chatId, messageId,
+                    BuildProfileMessage(user.Id),
+                    parseMode: ParseMode.Html,
+                    replyMarkup: ProfileKeyboard(),
+                    cancellationToken: ct);
+                return;
+            }
+
             // ── Онбординг: выбор этапа веры ───────────────────────────
             if (data.StartsWith("onb:stage:"))
             {
@@ -1251,7 +1291,7 @@ public class MessageHandler
                     return;
 
                 case "menu:catalog":
-                    var (ct2, ck2) = BuildCatalogPage(0, "all");
+                    var (ct2, ck2) = BuildCatalogPage(0, "all", user.Id);
                     reply = ct2; keyboard = ck2;
                     break;
 
@@ -1333,15 +1373,17 @@ public class MessageHandler
             }
         }
 
+        var inlineUserLangs = _db.GetUserLanguages(query.From.Id);
         List<Book> items;
         if (string.IsNullOrEmpty(searchText))
         {
             items = (typeFilter == null ? _bookService.GetAllBooks() : _bookService.GetByType(typeFilter))
+                .Where(b => inlineUserLangs.Count == 0 || inlineUserLangs.Contains((b.Language ?? "ru").ToLowerInvariant()))
                 .OrderBy(_ => Guid.NewGuid()).Take(8).ToList();
         }
         else
         {
-            items = _bookService.SearchBooks(searchText);
+            items = _bookService.SearchBooks(searchText, query.From.Id);
             if (typeFilter != null) items = items.Where(b => b.Type == typeFilter).ToList();
             items = items.Take(8).ToList();
         }
@@ -1400,10 +1442,13 @@ public class MessageHandler
     // Каталог с пагинацией и фильтром по типу
     // ════════════════════════════════════════════════════════════
 
-    private (string Text, InlineKeyboardMarkup Keyboard) BuildCatalogPage(int page, string typeFilter)
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildCatalogPage(int page, string typeFilter, long telegramId = 0)
     {
+        var langs = telegramId > 0 ? _db.GetUserLanguages(telegramId) : new HashSet<string>();
         var all = _bookService.GetAllBooks();
-        var filtered = typeFilter == "all" ? all : all.Where(b => b.Type == typeFilter).ToList();
+        var filtered = typeFilter == "all" ? all.ToList() : all.Where(b => b.Type == typeFilter).ToList();
+        if (langs.Count > 0)
+            filtered = filtered.Where(b => langs.Contains((b.Language ?? "ru").ToLowerInvariant())).ToList();
 
         var emptyLabels = new Dictionary<string, string>
         {
@@ -1550,9 +1595,12 @@ public class MessageHandler
     // Журналы — список изданий и выпуски
     // ════════════════════════════════════════════════════════════
 
-    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazinesList()
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazinesList(long telegramId = 0)
     {
+        var langs = telegramId > 0 ? _db.GetUserLanguages(telegramId) : new HashSet<string>();
         var mags = _db.GetAllMagazines();
+        if (langs.Count > 0)
+            mags = mags.Where(m => langs.Contains((m.Language ?? "ru").ToLowerInvariant())).ToList();
         // Показываем только журналы, у которых есть выпуски
         var withIssues = mags
             .Select(m => (m.Id, m.Slug, m.Title, m.Url, Count: _db.GetMagazineIssues(m.Id).Count))
@@ -1730,8 +1778,35 @@ public class MessageHandler
     {
         new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить этап",      "profile:editstage") },
         new[] { InlineKeyboardButton.WithCallbackData("🔄 Сменить интересы",  "profile:editinterests") },
+        new[] { InlineKeyboardButton.WithCallbackData("🌐 Языки",             "profile:editlangs") },
         new[] { HomeButton() }
     });
+
+    private InlineKeyboardMarkup ProfileLanguagesKeyboard(long telegramId)
+    {
+        var selected = _db.GetUserLanguages(telegramId);
+
+        // Показываем только те языки, по которым реально есть контент.
+        // Это автоматически отфильтровывает «мёртвые» коды.
+        var available = LanguageRegistry.Labels.Keys
+            .OrderBy(c => c == "ru" ? 0 : 1)              // ru первым
+            .ThenBy(c => LanguageRegistry.Label(c))        // потом по алфавиту
+            .ToList();
+
+        var rows = new List<InlineKeyboardButton[]>();
+        for (var i = 0; i < available.Count; i += 2)
+        {
+            var pair = available.Skip(i).Take(2).Select(code =>
+            {
+                var on = selected.Contains(code);
+                var label = on ? $"{LanguageRegistry.Label(code)} ✓" : LanguageRegistry.Label(code);
+                return InlineKeyboardButton.WithCallbackData(label, $"profile:lang:{code}");
+            }).ToArray();
+            rows.Add(pair);
+        }
+        rows.Add([InlineKeyboardButton.WithCallbackData("✅ Готово", "profile:savelangs")]);
+        return new InlineKeyboardMarkup(rows);
+    }
 
     private static InlineKeyboardMarkup ProfileStageKeyboard()
     {
@@ -2189,13 +2264,22 @@ public class MessageHandler
             ? "<i>не выбраны</i>"
             : BookService.EscapeHtml(prefs!.Interests);
 
+        var langs = (prefs?.Languages ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .Select(LanguageRegistry.Label)
+            .ToList();
+        var langsLine = langs.Count == 0 ? "<i>все</i>" : string.Join(", ", langs);
+
         return $"""
             ⚙️ <b>Твой профиль</b>
 
             <b>Этап веры:</b> {stage}
             <b>Интересы:</b> {interests}
+            <b>Языки:</b> {langsLine}
 
-            Эти данные помогают подбирать книги точнее. Можешь изменить в любой момент.
+            Эти данные помогают подбирать материалы точнее. Можешь изменить в любой момент.
             """;
     }
 

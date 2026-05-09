@@ -188,6 +188,17 @@ public class BotPollingService : BackgroundService
                 var renamedCount = _importer.NormalizeMagazineIssueTitles();
                 if (renamedCount > 0)
                     _logger.LogInformation("[Bootstrap] переименовано выпусков: {N}", renamedCount);
+
+                // Проставим языки существующим Books (radio определяется по
+                // URL slug, остальные = 'ru' по умолчанию).
+                var langUpdated = _importer.BackfillBookLanguages();
+                if (langUpdated > 0)
+                    _logger.LogInformation("[Bootstrap] проставлено языков: {N}", langUpdated);
+
+                // Дотянем недостающие магазины (новые языковые версии).
+                var newMags = await _importer.ImportMagazinesAsync(stoppingToken);
+                if (newMags > 0)
+                    _logger.LogInformation("[Bootstrap] добавлено журналов: {N}", newMags);
             }
             catch (Exception ex)
             {

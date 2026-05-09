@@ -120,6 +120,13 @@ public class BookService
         if (allBooks.Count == 0)
             return new RecommendationResult("К сожалению, в библиотеке пока нет книг. Мы уже работаем над этим! 📚", []);
 
+        // Языковой фильтр пользователя — пустой = без ограничений
+        var langs = telegramId > 0 ? _db.GetUserLanguages(telegramId) : new HashSet<string>();
+        if (langs.Count > 0)
+            allBooks = allBooks.Where(b => langs.Contains((b.Language ?? "ru").ToLowerInvariant())).ToList();
+        if (allBooks.Count == 0)
+            return new RecommendationResult("На выбранных языках пока нет материалов. Можешь поменять языки в профиле.", []);
+
         var excludeIds = new HashSet<long>();
         var lowRated   = new HashSet<long>();
         string prefsContext = "";
@@ -245,7 +252,11 @@ public class BookService
         if (telegramId > 0)
             foreach (var id in _db.GetIgnoredBookIds(telegramId)) excludeIds.Add(id);
 
-        var allBooks = _db.GetAllBooks().Where(b => !excludeIds.Contains(b.Id)).ToList();
+        var langs = telegramId > 0 ? _db.GetUserLanguages(telegramId) : new HashSet<string>();
+        var allBooks = _db.GetAllBooks()
+            .Where(b => !excludeIds.Contains(b.Id))
+            .Where(b => langs.Count == 0 || langs.Contains((b.Language ?? "ru").ToLowerInvariant()))
+            .ToList();
 
         var sourceStems = ExtractStems(source.Tags + " " + source.Title);
 
@@ -306,9 +317,13 @@ public class BookService
     // Поиск
     // ────────────────────────────────────────────────────────────
 
-    public List<Book> SearchBooks(string query)
+    public List<Book> SearchBooks(string query, long telegramId = 0)
     {
         var books = _db.GetAllBooks();
+        var langs = telegramId > 0 ? _db.GetUserLanguages(telegramId) : new HashSet<string>();
+        if (langs.Count > 0)
+            books = books.Where(b => langs.Contains((b.Language ?? "ru").ToLowerInvariant())).ToList();
+
         if (string.IsNullOrWhiteSpace(query)) return books.Take(5).ToList();
 
         var stems = ExtractStems(query);

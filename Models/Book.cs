@@ -14,4 +14,5 @@ public class Book
     public long? IssueId { get; set; }
     public DateTime? ReleasedAt { get; set; }
     public string CoverUrl { get; set; } = string.Empty;
+    public string Language { get; set; } = "ru";
 }

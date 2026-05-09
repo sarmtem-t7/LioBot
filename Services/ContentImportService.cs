@@ -80,27 +80,74 @@ public class ContentImportService
             .Where(u => new Uri(u).AbsolutePath.Count(c => c == '/') >= 2)
             .ToList();
         return await ImportPagesAsync(urls, type: "radio", isAudio: true, generateTags: false, ct,
-            defaultTags: "радио");
+            defaultTags: "радио",
+            languageResolver: LanguageRegistry.LanguageForRadioUrl);
+    }
+
+    // Проставляет Language всем существующим Books, у которых он ещё в дефолте.
+    // type=radio определяется по slug URL, остальное = 'ru'.
+    public int BackfillBookLanguages()
+    {
+        var updated = 0;
+        foreach (var b in _db.GetAllBooks())
+        {
+            string desired = b.Type == "radio"
+                ? LanguageRegistry.LanguageForRadioUrl(b.Url)
+                : "ru";
+            if (string.Equals(b.Language, desired, StringComparison.OrdinalIgnoreCase)) continue;
+            _db.SetBookLanguage(b.Id, desired);
+            updated++;
+        }
+        return updated;
+    }
+
+    // Карта суффикса slug-а журнала на код языка. Тропинка/Вера у нас
+    // публикуются на ~16 языках, slug формат: «vera», «vera-bg», «tropinka-arm»…
+    // (-audio это всё ещё русский; -audio-ukr — украинский аудио). Если
+    // суффикс не известен — возвращаем 'ru' как разумный дефолт.
+    private static string LanguageFromSlug(string slug)
+    {
+        // Сначала длинные суффиксы (audio-ukr и т.п.), потом короткие
+        var langSuffixes = new (string Suffix, string Lang)[]
+        {
+            ("-audio-ukr", "ukr"), ("-ukr-audio", "ukr"),
+            ("-arm", "arm"), ("-bg", "bg"), ("-eng", "eng"),
+            ("-ger", "ger"), ("-grz", "grz"), ("-kg", "kg"),
+            ("-kz", "kz"),  ("-lv", "lv"), ("-rum", "rum"),
+            ("-ukr", "ukr"), ("-uzb", "uzb"),
+            ("-audio", "ru"),
+        };
+        foreach (var (s, l) in langSuffixes)
+            if (slug.EndsWith(s, StringComparison.OrdinalIgnoreCase)) return l;
+        return "ru";
     }
 
     public async Task<int> ImportMagazinesAsync(CancellationToken ct = default)
     {
-        var keep = new Regex(@"/zurnaly/(vera|tropinka|menora)(-audio)?/?$");
+        // Все журналы, что объявлены в sitemap под /zurnaly/<slug>.
         var urls = (await SitemapUrlsAsync(SitemapMain, "/zurnaly/", ct))
-            .Where(u => keep.IsMatch(u))
+            .Where(u => Regex.IsMatch(u, @"/zurnaly/[a-z0-9\-]+/?$", RegexOptions.IgnoreCase))
             .ToList();
 
         var added = 0;
         foreach (var url in urls)
         {
             var slug = url.TrimEnd('/').Split('/').Last();
-            if (_db.MagazineExistsBySlug(slug)) continue;
+            var lang = LanguageFromSlug(slug);
+
+            if (_db.MagazineExistsBySlug(slug))
+            {
+                // Идемпотентно проставим язык, если его раньше не было.
+                var id = _db.GetMagazineIdBySlug(slug);
+                if (id.HasValue) _db.SetMagazineLanguage(id.Value, lang);
+                continue;
+            }
             var html = await FetchAsync(url, ct);
             var meta = ExtractMeta(html ?? "");
             var title = meta.GetValueOrDefault("og_title")
                      ?? meta.GetValueOrDefault("title")
                      ?? slug;
-            _db.AddMagazine(slug, title, url);
+            _db.AddMagazine(slug, title, url, lang);
             added++;
         }
         return added;
@@ -182,7 +229,7 @@ public class ContentImportService
     public int DeduplicateMagazineIssues()
     {
         var deleted = 0;
-        foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
+        foreach (var (magId, slug, magTitle, _, _) in _db.GetAllMagazines())
         {
             var issues = _db.GetMagazineIssues(magId);
             var keyed = issues
@@ -218,7 +265,7 @@ public class ContentImportService
     public int PurgeUnparseableMagazineIssues()
     {
         var deleted = 0;
-        foreach (var (magId, _, _, _) in _db.GetAllMagazines())
+        foreach (var (magId, _, _, _, _) in _db.GetAllMagazines())
         {
             foreach (var issue in _db.GetMagazineIssues(magId))
             {
@@ -236,7 +283,7 @@ public class ContentImportService
     public int NormalizeMagazineIssueTitles()
     {
         var renamed = 0;
-        foreach (var (magId, slug, magTitle, _) in _db.GetAllMagazines())
+        foreach (var (magId, slug, magTitle, _, _) in _db.GetAllMagazines())
         {
             var prefix = CanonicalMagazinePrefix(slug, magTitle);
             var issues = _db.GetMagazineIssues(magId);
@@ -256,16 +303,13 @@ public class ContentImportService
 
     public async Task<int> ImportMagazineIssuesAsync(CancellationToken ct = default)
     {
-        var slugs = new[] { "vera", "tropinka" };
+        // Импортируем выпуски ВСЕХ зарегистрированных журналов (русский,
+        // украинский, английский, немецкий и т.д. — slug = язык/имя).
         var added = 0;
-        foreach (var slug in slugs)
+        foreach (var (mid, slugFromDb, _, _, _) in _db.GetAllMagazines())
         {
-            var magId = _db.GetMagazineIdBySlug(slug);
-            if (magId is null)
-            {
-                _logger.LogDebug("[Import] Журнал {Slug} не найден в Magazines — пропуск", slug);
-                continue;
-            }
+            var slug = slugFromDb;
+            var magId = (long?)mid;
             var pageUrl = $"https://www.lio-int.com/zurnaly/{slug}";
             var html = await FetchAsync(pageUrl, ct);
             if (string.IsNullOrEmpty(html)) continue;
@@ -326,7 +370,8 @@ public class ContentImportService
     // ─── Общая часть: импорт списка URL в Books ───────────────────────
     private async Task<int> ImportPagesAsync(
         List<string> urls, string type, bool isAudio, bool generateTags,
-        CancellationToken ct, string defaultTags = "")
+        CancellationToken ct, string defaultTags = "",
+        Func<string, string>? languageResolver = null)
     {
         _logger.LogInformation("[Import {Type}] {Count} URL", type, urls.Count);
         var added = 0;
@@ -373,7 +418,8 @@ public class ContentImportService
                 Url = url,
                 Type = type,
                 AudioUrl = isAudio ? url : "",
-                CoverUrl = meta.GetValueOrDefault("og_image") ?? ""
+                CoverUrl = meta.GetValueOrDefault("og_image") ?? "",
+                Language = languageResolver?.Invoke(url) ?? "ru"
             });
             added++;
         }

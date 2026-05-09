@@ -65,7 +65,10 @@ public partial class DatabaseContext
             "ALTER TABLE Books ADD COLUMN IssueId INTEGER",
             "ALTER TABLE Books ADD COLUMN ReleasedAt TEXT",
             "ALTER TABLE Users ADD COLUMN LastBotMessageId INTEGER",
-            "ALTER TABLE Books ADD COLUMN CoverUrl TEXT NOT NULL DEFAULT ''"
+            "ALTER TABLE Books ADD COLUMN CoverUrl TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE Books ADD COLUMN Language TEXT NOT NULL DEFAULT 'ru'",
+            "ALTER TABLE Magazines ADD COLUMN Language TEXT NOT NULL DEFAULT 'ru'",
+            "ALTER TABLE UserPreferences ADD COLUMN Languages TEXT NOT NULL DEFAULT ''"
         })
         {
             cmd.CommandText = migration;
@@ -382,7 +385,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books WHERE Id = $id";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl, COALESCE(Language,'ru') FROM Books WHERE Id = $id";
         cmd.Parameters.AddWithValue("$id", id);
         using var reader = cmd.ExecuteReader();
         if (!reader.Read()) return null;
@@ -394,7 +397,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books";
+        cmd.CommandText = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl, COALESCE(Language,'ru') FROM Books";
         using var reader = cmd.ExecuteReader();
         var list = new List<Book>();
         while (reader.Read()) list.Add(MapBook(reader));
@@ -407,8 +410,8 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO Books (Title, Author, Description, Tags, Url, Type, CoverUrl)
-            VALUES ($title, $author, $desc, $tags, $url, $type, $cover)
+            INSERT INTO Books (Title, Author, Description, Tags, Url, Type, CoverUrl, Language)
+            VALUES ($title, $author, $desc, $tags, $url, $type, $cover, $lang)
             """;
         cmd.Parameters.AddWithValue("$title",  book.Title);
         cmd.Parameters.AddWithValue("$author", book.Author);
@@ -417,6 +420,7 @@ public partial class DatabaseContext
         cmd.Parameters.AddWithValue("$url",    book.Url);
         cmd.Parameters.AddWithValue("$type",   book.Type);
         cmd.Parameters.AddWithValue("$cover",  book.CoverUrl ?? "");
+        cmd.Parameters.AddWithValue("$lang",   string.IsNullOrEmpty(book.Language) ? "ru" : book.Language);
         cmd.ExecuteNonQuery();
     }
 
@@ -492,15 +496,27 @@ public partial class DatabaseContext
         return cmd.ExecuteScalar() != null;
     }
 
-    public void AddMagazine(string slug, string title, string url)
+    public void AddMagazine(string slug, string title, string url, string language = "ru")
     {
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO Magazines (Slug, Title, Url) VALUES ($s, $t, $u)";
+        cmd.CommandText = "INSERT INTO Magazines (Slug, Title, Url, Language) VALUES ($s, $t, $u, $l)";
         cmd.Parameters.AddWithValue("$s", slug);
         cmd.Parameters.AddWithValue("$t", title);
         cmd.Parameters.AddWithValue("$u", url);
+        cmd.Parameters.AddWithValue("$l", language);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SetMagazineLanguage(long id, string language)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Magazines SET Language = $l WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$l",  language);
+        cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -591,16 +607,42 @@ public partial class DatabaseContext
         return list;
     }
 
-    public List<(long Id, string Slug, string Title, string Url)> GetAllMagazines()
+    public List<(long Id, string Slug, string Title, string Url, string Language)> GetAllMagazines()
     {
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Slug, Title, Url FROM Magazines ORDER BY Title";
+        cmd.CommandText = "SELECT Id, Slug, Title, Url, COALESCE(Language,'ru') FROM Magazines ORDER BY Title";
         using var reader = cmd.ExecuteReader();
-        var list = new List<(long, string, string, string)>();
+        var list = new List<(long, string, string, string, string)>();
         while (reader.Read())
-            list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+            list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4)));
+        return list;
+    }
+
+    public List<long> GetMagazineIdsByLanguages(IReadOnlyCollection<string> languages)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        if (languages.Count == 0)
+        {
+            cmd.CommandText = "SELECT Id FROM Magazines";
+        }
+        else
+        {
+            var placeholders = string.Join(",", languages.Select((_, i) => $"$l{i}"));
+            cmd.CommandText = $"SELECT Id FROM Magazines WHERE COALESCE(Language,'ru') IN ({placeholders})";
+            var i = 0;
+            foreach (var lang in languages)
+            {
+                cmd.Parameters.AddWithValue($"$l{i}", lang);
+                i++;
+            }
+        }
+        using var reader = cmd.ExecuteReader();
+        var list = new List<long>();
+        while (reader.Read()) list.Add(reader.GetInt64(0));
         return list;
     }
 
@@ -609,7 +651,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books WHERE Type = $type ORDER BY Id DESC";
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl, COALESCE(Language,'ru') FROM Books WHERE Type = $type ORDER BY Id DESC";
         if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$type", type);
@@ -655,7 +697,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl FROM Books " +
+        var sql = "SELECT Id, Title, Author, Description, Tags, Url, Type, AudioUrl, IssueId, ReleasedAt, CoverUrl, COALESCE(Language,'ru') FROM Books " +
                   "WHERE TRIM(Author) = $author ORDER BY Id DESC";
         if (limit.HasValue) sql += $" LIMIT {limit.Value} OFFSET {offset}";
         cmd.CommandText = sql;
@@ -740,7 +782,7 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl, COALESCE(b.Language,'ru')
             FROM Books b
             INNER JOIN ReadBooks r ON r.BookId = b.Id
             WHERE r.TelegramId = $tid
@@ -822,7 +864,7 @@ public partial class DatabaseContext
         conn.Open();
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl
+            SELECT b.Id, b.Title, b.Author, b.Description, b.Tags, b.Url, b.Type, b.AudioUrl, b.IssueId, b.ReleasedAt, b.CoverUrl, COALESCE(b.Language,'ru')
             FROM Books b
             INNER JOIN Favorites f ON f.ContentId = b.Id
             WHERE f.TelegramId = $tid
@@ -860,7 +902,8 @@ public partial class DatabaseContext
         AudioUrl    = r.FieldCount > 7 && !r.IsDBNull(7) ? r.GetString(7) : string.Empty,
         IssueId     = r.FieldCount > 8 && !r.IsDBNull(8) ? r.GetInt64(8) : null,
         ReleasedAt  = r.FieldCount > 9 && !r.IsDBNull(9) ? DateTime.Parse(r.GetString(9)) : null,
-        CoverUrl    = r.FieldCount > 10 && !r.IsDBNull(10) ? r.GetString(10) : string.Empty
+        CoverUrl    = r.FieldCount > 10 && !r.IsDBNull(10) ? r.GetString(10) : string.Empty,
+        Language    = r.FieldCount > 11 && !r.IsDBNull(11) ? r.GetString(11) : "ru"
     };
 
     public List<(long Id, string Url)> GetBooksWithoutCover(string? typeFilter = null, int? limit = null)
@@ -918,6 +961,17 @@ public partial class DatabaseContext
         cmd.CommandText = "SELECT 1 FROM ChannelMenus WHERE ChatId = $c LIMIT 1";
         cmd.Parameters.AddWithValue("$c", chatId);
         return cmd.ExecuteScalar() != null;
+    }
+
+    public void SetBookLanguage(long bookId, string language)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE Books SET Language = $l WHERE Id = $id";
+        cmd.Parameters.AddWithValue("$l",  language);
+        cmd.Parameters.AddWithValue("$id", bookId);
+        cmd.ExecuteNonQuery();
     }
 
     public void SetBookCover(long bookId, string coverUrl)

@@ -14,7 +14,7 @@ public partial class DatabaseContext
         using var conn = CreateConnection();
         conn.Open();
         var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT TelegramId, FaithStage, Interests, UpdatedAt FROM UserPreferences WHERE TelegramId = $tid";
+        cmd.CommandText = "SELECT TelegramId, FaithStage, Interests, COALESCE(Languages, ''), UpdatedAt FROM UserPreferences WHERE TelegramId = $tid";
         cmd.Parameters.AddWithValue("$tid", telegramId);
         using var r = cmd.ExecuteReader();
         if (!r.Read()) return null;
@@ -23,8 +23,47 @@ public partial class DatabaseContext
             TelegramId = r.GetInt64(0),
             FaithStage = r.GetString(1),
             Interests  = r.GetString(2),
-            UpdatedAt  = DateTime.Parse(r.GetString(3))
+            Languages  = r.GetString(3),
+            UpdatedAt  = DateTime.Parse(r.GetString(4))
         };
+    }
+
+    public void ToggleLanguage(long telegramId, string lang)
+    {
+        var prefs = GetPreferences(telegramId);
+        var current = (prefs?.Languages ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToList();
+
+        if (current.Contains(lang, StringComparer.OrdinalIgnoreCase))
+            current.RemoveAll(s => string.Equals(s, lang, StringComparison.OrdinalIgnoreCase));
+        else
+            current.Add(lang);
+
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO UserPreferences (TelegramId, FaithStage, Interests, Languages, UpdatedAt)
+            VALUES ($tid, '', '', $langs, $ts)
+            ON CONFLICT(TelegramId) DO UPDATE SET Languages = excluded.Languages, UpdatedAt = excluded.UpdatedAt
+            """;
+        cmd.Parameters.AddWithValue("$tid",   telegramId);
+        cmd.Parameters.AddWithValue("$langs", string.Join(",", current));
+        cmd.Parameters.AddWithValue("$ts",    DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
+    }
+
+    public HashSet<string> GetUserLanguages(long telegramId)
+    {
+        var prefs = GetPreferences(telegramId);
+        return (prefs?.Languages ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim().ToLowerInvariant())
+            .Where(s => s.Length > 0)
+            .ToHashSet();
     }
 
     public void SetFaithStage(long telegramId, string stage)
