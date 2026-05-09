@@ -124,24 +124,33 @@ public class ContentImportService
     //   «Вера и Жизнь 2026.1»      → (2026, 1)
     //   «1995 Вера и Жизнь № 4»    → (1995, 4)
     // Возвращает null, если оба числа извлечь не удалось.
-    private static readonly Regex IssueKeyDotRe       = new(@"(?<y>(?:19|20)\d{2})\s*\.\s*(?<n>\d+)");
-    private static readonly Regex IssueKeyHashRe      = new(@"(?<y>(?:19|20)\d{2}).{0,30}?[№#]\s*(?<n>\d+)");
-    private static readonly Regex IssueKeyDashRe      = new(@"(?<y>(?:19|20)\d{2})\s*[-–—]\s*(?<n>\d+)");
-    // Обратный формат: «1.1989» — номер.год. Используется в og:description
-    // у старых выпусков «Веры и Жизнь».
-    private static readonly Regex IssueKeyNumDotYearRe = new(@"^\s*(?<n>\d+)\s*\.\s*(?<y>(?:19|20)\d{2})\s*$");
+    // Все шаблоны опционально захватывают второй номер через /M или -M
+    // (сдвоенные выпуски, типа «2002.3/4» или «1985 № 3-4»).
+    private static readonly Regex IssueKeyDotRe        = new(@"(?<y>(?:19|20)\d{2})\s*\.\s*(?<n>\d+)(?:[/\-–—](?<n2>\d+))?");
+    private static readonly Regex IssueKeyHashRe       = new(@"(?<y>(?:19|20)\d{2}).{0,30}?[№#]\s*(?<n>\d+)(?:[/\-–—](?<n2>\d+))?");
+    private static readonly Regex IssueKeyDashRe       = new(@"(?<y>(?:19|20)\d{2})\s*[-–—]\s*(?<n>\d+)(?:[/](?<n2>\d+))?");
+    private static readonly Regex IssueKeyNumDotYearRe = new(@"^\s*(?<n>\d+)(?:[/\-–—](?<n2>\d+))?\s*\.\s*(?<y>(?:19|20)\d{2})\s*$");
 
-    private static (int Year, int Num)? ParseIssueKey(string title)
+    private record IssueKey(int Year, int Num, int? Num2)
+    {
+        public string Label => Num2.HasValue ? $"{Num}/{Num2}" : Num.ToString();
+    }
+
+    private static IssueKey? ParseIssueKey(string title)
     {
         if (string.IsNullOrWhiteSpace(title)) return null;
         foreach (var rx in new[] { IssueKeyDotRe, IssueKeyHashRe, IssueKeyDashRe, IssueKeyNumDotYearRe })
         {
             var m = rx.Match(title);
-            if (m.Success
-                && int.TryParse(m.Groups["y"].Value, out var y)
-                && int.TryParse(m.Groups["n"].Value, out var n)
-                && n is > 0 and < 100)
-                return (y, n);
+            if (!m.Success) continue;
+            if (!int.TryParse(m.Groups["y"].Value, out var y)) continue;
+            if (!int.TryParse(m.Groups["n"].Value, out var n) || n is <= 0 or >= 100) continue;
+            int? n2 = null;
+            if (m.Groups["n2"].Success
+                && int.TryParse(m.Groups["n2"].Value, out var nn2)
+                && nn2 is > 0 and < 100)
+                n2 = nn2;
+            return new IssueKey(y, n, n2);
         }
         return null;
     }
@@ -178,10 +187,10 @@ public class ContentImportService
             var issues = _db.GetMagazineIssues(magId);
             var keyed = issues
                 .Select(i => new { Issue = i, Key = ParseIssueKey(i.Title) })
-                .Where(x => x.Key.HasValue)
+                .Where(x => x.Key is not null)
                 .ToList();
 
-            foreach (var group in keyed.GroupBy(x => x.Key!.Value))
+            foreach (var group in keyed.GroupBy(x => x.Key!))
             {
                 if (group.Count() < 2) continue;
                 var ranked = group
@@ -195,7 +204,7 @@ public class ContentImportService
                     _db.DeleteMagazineIssue(dup.Issue.Id);
                     deleted++;
                     _logger.LogInformation("[Dedup] Удалён дубль mag={M} ({Y}/{N}) id={Id} «{T}»",
-                        magId, group.Key.Year, group.Key.Num, dup.Issue.Id, dup.Issue.Title);
+                        magId, group.Key.Year, group.Key.Label, dup.Issue.Id, dup.Issue.Title);
                 }
             }
         }
@@ -213,7 +222,7 @@ public class ContentImportService
         {
             foreach (var issue in _db.GetMagazineIssues(magId))
             {
-                if (ParseIssueKey(issue.Title).HasValue) continue;
+                if (ParseIssueKey(issue.Title) is not null) continue;
                 _db.DeleteMagazineIssue(issue.Id);
                 deleted++;
             }
@@ -234,8 +243,8 @@ public class ContentImportService
             foreach (var issue in issues)
             {
                 var key = ParseIssueKey(issue.Title);
-                if (!key.HasValue) continue;
-                var canonical = $"{prefix} {key.Value.Year}.{key.Value.Num}";
+                if (key is null) continue;
+                var canonical = $"{prefix} {key.Year}.{key.Label}";
                 if (issue.Title == canonical) continue;
                 _db.UpdateMagazineIssueTitle(issue.Id, canonical);
                 renamed++;
@@ -287,16 +296,16 @@ public class ContentImportService
                 // пробуем оба источника, выбираем тот, где key распарсилась.
                 var key = ParseIssueKey(ogTitle) ?? ParseIssueKey(ogDesc);
 
-                // Канонический title: «<Журнал> Y.N». Если ключ не извлёкся,
-                // оставляем что есть из og:title.
+                // Канонический title: «<Журнал> Y.N» или «<Журнал> Y.N/M».
+                // Если ключ не извлёкся, оставляем что есть из og:title.
                 var prefix = CanonicalMagazinePrefix(slug, ogTitle);
-                var title = key.HasValue
-                    ? $"{prefix} {key.Value.Year}.{key.Value.Num}"
+                var title = key is not null
+                    ? $"{prefix} {key.Year}.{key.Label}"
                     : (string.IsNullOrEmpty(ogTitle) ? slug : ogTitle);
 
                 var coverUrl = meta.GetValueOrDefault("og_image") ?? "";
 
-                string? releasedAt = key.HasValue ? $"{key.Value.Year}-01-01" : null;
+                string? releasedAt = key is not null ? $"{key.Year}-01-01" : null;
 
                 if (_db.MagazineIssueExists(magId.Value, title))
                 {
