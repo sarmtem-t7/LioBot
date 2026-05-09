@@ -151,11 +151,16 @@ public class BotPollingService : BackgroundService
                 var tropCount = tropId.HasValue ? _db.GetMagazineIssues(tropId.Value).Count : 0;
                 _logger.LogInformation("[Bootstrap] Журналы: vera={V}, tropinka={T}", veraCount, tropCount);
 
+                // Sentinel: после v3 импорта (с поддержкой сдвоенных выпусков
+                // вроде 2002.3/4) в БД должны появиться записи с «/» в title.
+                // Если ни одной нет — парсер обновился, надо перезалить.
+                bool HasCombinedIssue(long? mid) =>
+                    mid.HasValue && _db.GetMagazineIssues(mid.Value).Any(i => i.Title.Contains('/'));
+                var hasCombined = HasCombinedIssue(veraId) || HasCombinedIssue(tropId);
+
                 // Реимпорт нужен, если в каталоге явно мало выпусков (либо
-                // парсер был обновлён и старые «уродцы» без года/номера не
-                // дают новому импорту проставить канонические заголовки —
-                // их сначала чистим).
-                if (veraCount < 250 || tropCount < 100)
+                // парсер был обновлён и нет признаков нового формата).
+                if (veraCount < 250 || tropCount < 100 || !hasCombined)
                 {
                     if (_importer.IsRunning)
                     {
