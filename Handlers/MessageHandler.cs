@@ -725,9 +725,35 @@ public class MessageHandler
                 return;
             }
 
+            // Журнал → список годов
+            if (data.StartsWith("mag:years:") && long.TryParse(data[10..], out var yearsMagId))
+            {
+                var (text, kb) = BuildMagazineYears(yearsMagId);
+                await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
+                return;
+            }
+
+            // Конкретный год → выпуски этого года
+            if (data.StartsWith("mag:year:"))
+            {
+                var parts = data.Substring(9).Split(':');
+                if (parts.Length == 2
+                    && long.TryParse(parts[0], out var yMagId)
+                    && int.TryParse(parts[1], out var year))
+                {
+                    var (text, kb) = BuildMagazineIssuesForYear(yMagId, year);
+                    await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
+                    await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
+                    return;
+                }
+            }
+
+            // Старый колбэк mag:issues — для совместимости со старыми
+            // сообщениями в чате; перенаправляем на список годов.
             if (data.StartsWith("mag:issues:") && long.TryParse(data[11..], out var magId))
             {
-                var (text, kb) = BuildMagazineIssues(magId);
+                var (text, kb) = BuildMagazineYears(magId);
                 await bot.AnswerCallbackQuery(query.Id, cancellationToken: ct);
                 await ReplaceMessage(bot, chatId, messageId, text, kb, ct);
                 return;
@@ -1429,12 +1455,28 @@ public class MessageHandler
         var buttons = new List<InlineKeyboardButton[]>();
         foreach (var (id, slug, title, url, count) in withIssues)
             buttons.Add([InlineKeyboardButton.WithCallbackData(
-                $"📖 {title} · {count} выпусков", $"mag:issues:{id}")]);
+                $"📖 {title} · {count} вып.", $"mag:years:{id}")]);
         buttons.Add([HomeButton()]);
         return ("📖 <b>Журналы</b>\n\nВыбери издание:", new InlineKeyboardMarkup(buttons));
     }
 
-    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazineIssues(long magazineId)
+    // Извлекает год выпуска: сначала из ReleasedAt, потом из заголовка.
+    // Возвращает null, если год не определяется (тогда выпуск попадёт в группу «без даты»).
+    private static readonly System.Text.RegularExpressions.Regex IssueYearRe =
+        new(@"\b(19|20)\d{2}\b");
+
+    private static int? ExtractIssueYear(string title, string? releasedAt)
+    {
+        if (!string.IsNullOrEmpty(releasedAt) && releasedAt.Length >= 4
+            && int.TryParse(releasedAt[..4], out var y) && y is >= 1900 and <= 2100)
+            return y;
+        var m = IssueYearRe.Match(title ?? "");
+        if (m.Success && int.TryParse(m.Value, out var y2)) return y2;
+        return null;
+    }
+
+    // Список годов выбранного журнала: от свежих к старым, рядом число выпусков.
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazineYears(long magazineId)
     {
         var issues = _db.GetMagazineIssues(magazineId);
         if (issues.Count == 0)
@@ -1444,23 +1486,75 @@ public class MessageHandler
                 new[] { HomeButton() }
             }));
 
-        var sb = new System.Text.StringBuilder();
-        sb.Append("📖 <b>Выпуски</b> — нажми, чтобы читать:");
+        var grouped = issues
+            .Select(i => new { Year = ExtractIssueYear(i.Title, i.ReleasedAt), Issue = i })
+            .GroupBy(x => x.Year)
+            .ToList();
 
-        var buttons = new List<InlineKeyboardButton[]>();
-        foreach (var (id, title, url, coverUrl, releasedAt) in issues.Take(30))
-        {
-            if (!string.IsNullOrEmpty(url) && url.StartsWith("http"))
-                buttons.Add([InlineKeyboardButton.WithUrl($"📖 {title} — Читать", url)]);
-            else
-                buttons.Add([InlineKeyboardButton.WithCallbackData($"📖 {title}", $"mag:issues:{magazineId}")]);
-        }
-        buttons.Add(new[]
+        var dated   = grouped.Where(g => g.Key.HasValue).OrderByDescending(g => g.Key!.Value).ToList();
+        var undated = grouped.Where(g => !g.Key.HasValue).SelectMany(g => g).Count();
+
+        var magTitle = _db.GetAllMagazines().FirstOrDefault(m => m.Id == magazineId).Title ?? "Журнал";
+
+        var rows = new List<InlineKeyboardButton[]>();
+        // 4 года в ряд
+        var yearButtons = dated
+            .Select(g => InlineKeyboardButton.WithCallbackData(
+                $"{g.Key} · {g.Count()}",
+                $"mag:year:{magazineId}:{g.Key}"))
+            .ToList();
+        for (var i = 0; i < yearButtons.Count; i += 4)
+            rows.Add(yearButtons.Skip(i).Take(4).ToArray());
+
+        if (undated > 0)
+            rows.Add([InlineKeyboardButton.WithCallbackData(
+                $"📔 Без даты · {undated}", $"mag:year:{magazineId}:0")]);
+
+        rows.Add(new[]
         {
             InlineKeyboardButton.WithCallbackData("📖 К журналам", "magazines:list"),
             HomeButton()
         });
-        return (sb.ToString(), new InlineKeyboardMarkup(buttons));
+
+        var text = $"📖 <b>{BookService.EscapeHtml(magTitle)}</b>\n\nВсего выпусков: <b>{issues.Count}</b>\nВыбери год:";
+        return (text, new InlineKeyboardMarkup(rows));
+    }
+
+    // Выпуски конкретного года (или «без даты», если year == 0).
+    private (string Text, InlineKeyboardMarkup Keyboard) BuildMagazineIssuesForYear(long magazineId, int year)
+    {
+        var all = _db.GetMagazineIssues(magazineId);
+        var inYear = all
+            .Where(i => (ExtractIssueYear(i.Title, i.ReleasedAt) ?? 0) == year)
+            .OrderBy(i => i.Title)
+            .ToList();
+
+        var magTitle = _db.GetAllMagazines().FirstOrDefault(m => m.Id == magazineId).Title ?? "Журнал";
+        var yearLabel = year == 0 ? "без даты" : year.ToString();
+
+        if (inYear.Count == 0)
+            return ($"В {yearLabel} нет выпусков.", new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("← К годам", $"mag:years:{magazineId}") },
+                new[] { HomeButton() }
+            }));
+
+        var buttons = new List<InlineKeyboardButton[]>();
+        foreach (var (id, title, url, coverUrl, releasedAt) in inYear)
+        {
+            if (!string.IsNullOrEmpty(url) && url.StartsWith("http"))
+                buttons.Add([InlineKeyboardButton.WithUrl($"📖 {title}", url)]);
+            else
+                buttons.Add([InlineKeyboardButton.WithCallbackData($"📖 {title}", $"mag:years:{magazineId}")]);
+        }
+        buttons.Add(new[]
+        {
+            InlineKeyboardButton.WithCallbackData("← К годам", $"mag:years:{magazineId}"),
+            HomeButton()
+        });
+
+        var text = $"📖 <b>{BookService.EscapeHtml(magTitle)} · {yearLabel}</b>\n\nВыпусков: <b>{inYear.Count}</b>. Нажми, чтобы открыть:";
+        return (text, new InlineKeyboardMarkup(buttons));
     }
 
     // ════════════════════════════════════════════════════════════
