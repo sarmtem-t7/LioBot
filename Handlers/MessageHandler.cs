@@ -254,6 +254,10 @@ public class MessageHandler
                 }
                 else
                 {
+                    // Аргумент — куда публиковать. Без аргумента шлём превью
+                    // в эту же личку, чтобы можно было переслать руками.
+                    // С аргументом «@channel» или «-100…» — публикуем сразу.
+                    var arg = text.Replace("/channelpost", "").Trim();
                     var me = await bot.GetMe(ct);
                     var username = me.Username;
                     InlineKeyboardButton DeepLink(string label, string section) =>
@@ -268,15 +272,45 @@ public class MessageHandler
                         "📚 <b>Каталог Лио</b>\n\n" +
                         "Книги, аудиокниги, статьи, журналы и христианское радио — всё в одном месте.\n\n" +
                         "Нажми на любой раздел — откроется приватный чат с ботом.";
-                    var postMsg = await bot.SendMessage(chatId, postText,
-                        parseMode: ParseMode.Html,
-                        replyMarkup: postKeyboard,
-                        linkPreviewOptions: new() { IsDisabled = true },
-                        cancellationToken: ct);
-                    BotMessageTracker.Track(chatId, postMsg.MessageId);
 
-                    reply = "👆 Перешли это сообщение в канал и закрепи его. Подписчики смогут открывать любой раздел в личке с ботом.";
-                    keyboard = null;
+                    if (string.IsNullOrEmpty(arg))
+                    {
+                        var postMsg = await bot.SendMessage(chatId, postText,
+                            parseMode: ParseMode.Html,
+                            replyMarkup: postKeyboard,
+                            linkPreviewOptions: new() { IsDisabled = true },
+                            cancellationToken: ct);
+                        BotMessageTracker.Track(chatId, postMsg.MessageId);
+                        reply = "👆 Превью. Чтобы опубликовать сразу: <code>/channelpost @имя_канала</code> (или числовой ID). Бот должен быть админом канала с правом «Публиковать сообщения».";
+                        keyboard = null;
+                    }
+                    else
+                    {
+                        // Поддерживаем «@username», «https://t.me/username» и «-100…»
+                        var target = arg
+                            .Replace("https://t.me/", "")
+                            .Replace("http://t.me/", "")
+                            .TrimStart('@');
+                        ChatId chatTarget = long.TryParse(target, out var numericId)
+                            ? new ChatId(numericId)
+                            : new ChatId("@" + target);
+                        try
+                        {
+                            var posted = await bot.SendMessage(chatTarget, postText,
+                                parseMode: ParseMode.Html,
+                                replyMarkup: postKeyboard,
+                                linkPreviewOptions: new() { IsDisabled = true },
+                                cancellationToken: ct);
+                            reply = $"✅ Опубликовано в <code>{BookService.EscapeHtml(arg)}</code>.\nID сообщения: <code>{posted.MessageId}</code>\nЗакрепи его руками в канале.";
+                            keyboard = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "[Bot] /channelpost: не удалось опубликовать в {Target}", arg);
+                            reply = $"❌ Не получилось опубликовать в <code>{BookService.EscapeHtml(arg)}</code>: {BookService.EscapeHtml(ex.Message)}\n\nПроверь, что бот добавлен в канал админом с правом «Публиковать сообщения».";
+                            keyboard = null;
+                        }
+                    }
                 }
             }
             else if (text.StartsWith("/menu"))
