@@ -212,6 +212,18 @@ public partial class DatabaseContext
             """;
         cmd.ExecuteNonQuery();
 
+        // Канальные авто-меню: для каждого зарегистрированного канала
+        // храним id последнего сообщения-меню, чтобы знать, что удалять
+        // при ре-постинге «снизу» после нового поста админа.
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS ChannelMenus (
+                ChatId    INTEGER PRIMARY KEY,
+                MessageId INTEGER NOT NULL,
+                UpdatedAt TEXT NOT NULL
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
         // Verses already sent to a user (avoid repeats)
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS SentVerses (
@@ -847,6 +859,44 @@ public partial class DatabaseContext
         var list = new List<(long, string)>();
         while (reader.Read()) list.Add((reader.GetInt64(0), reader.GetString(1)));
         return list;
+    }
+
+    // ── Channel auto-bottom menu ──────────────────────────────────
+
+    public int? GetChannelMenuMessageId(long chatId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT MessageId FROM ChannelMenus WHERE ChatId = $c";
+        cmd.Parameters.AddWithValue("$c", chatId);
+        var r = cmd.ExecuteScalar();
+        return r is null or DBNull ? null : Convert.ToInt32(r);
+    }
+
+    public void SetChannelMenuMessageId(long chatId, int messageId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO ChannelMenus (ChatId, MessageId, UpdatedAt) VALUES ($c, $m, $t)
+            ON CONFLICT(ChatId) DO UPDATE SET MessageId = excluded.MessageId, UpdatedAt = excluded.UpdatedAt;
+            """;
+        cmd.Parameters.AddWithValue("$c", chatId);
+        cmd.Parameters.AddWithValue("$m", messageId);
+        cmd.Parameters.AddWithValue("$t", DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool IsChannelMenuRegistered(long chatId)
+    {
+        using var conn = CreateConnection();
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM ChannelMenus WHERE ChatId = $c LIMIT 1";
+        cmd.Parameters.AddWithValue("$c", chatId);
+        return cmd.ExecuteScalar() != null;
     }
 
     public void SetBookCover(long bookId, string coverUrl)

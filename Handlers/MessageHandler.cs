@@ -127,6 +127,12 @@ public class MessageHandler
             return;
         }
 
+        if (update.Type == UpdateType.ChannelPost && update.ChannelPost != null)
+        {
+            await HandleChannelPostAsync(bot, update.ChannelPost, ct);
+            return;
+        }
+
         if (update.Type != UpdateType.Message) return;
 
         var message = update.Message;
@@ -254,24 +260,9 @@ public class MessageHandler
                 }
                 else
                 {
-                    // Аргумент — куда публиковать. Без аргумента шлём превью
-                    // в эту же личку, чтобы можно было переслать руками.
-                    // С аргументом «@channel» или «-100…» — публикуем сразу.
                     var arg = text.Replace("/channelpost", "").Trim();
                     var me = await bot.GetMe(ct);
-                    var username = me.Username;
-                    InlineKeyboardButton DeepLink(string label, string section) =>
-                        InlineKeyboardButton.WithUrl(label, $"https://t.me/{username}?start={section}");
-                    var postKeyboard = new InlineKeyboardMarkup(new[]
-                    {
-                        new[] { DeepLink("📖 Книги",   "books"),     DeepLink("🎧 Аудио",     "audio"),     DeepLink("📰 Статьи", "articles") },
-                        new[] { DeepLink("🎙 Радио",   "radio"),     DeepLink("📔 Журналы",   "magazines"), DeepLink("👤 Авторы", "authors")  },
-                        new[] { DeepLink("🤖 Подбери", "pick"),      DeepLink("🔍 Поиск",     "search") }
-                    });
-                    var postText =
-                        "📚 <b>Каталог Лио</b>\n\n" +
-                        "Книги, аудиокниги, статьи, журналы и христианское радио — всё в одном месте.\n\n" +
-                        "Нажми на любой раздел — откроется приватный чат с ботом.";
+                    var (postText, postKeyboard) = BuildChannelMenuPost(me.Username!);
 
                     if (string.IsNullOrEmpty(arg))
                     {
@@ -281,7 +272,7 @@ public class MessageHandler
                             linkPreviewOptions: new() { IsDisabled = true },
                             cancellationToken: ct);
                         BotMessageTracker.Track(chatId, postMsg.MessageId);
-                        reply = "👆 Превью. Чтобы опубликовать сразу: <code>/channelpost @имя_канала</code> (или числовой ID). Бот должен быть админом канала с правом «Публиковать сообщения».";
+                        reply = "👆 Превью. Чтобы опубликовать сразу и подписать канал на авто-меню: <code>/channelpost @имя_канала</code>. Бот должен быть админом канала с правами «Публиковать», «Удалять» (для пере-постинга меню снизу).";
                         keyboard = null;
                     }
                     else
@@ -301,7 +292,11 @@ public class MessageHandler
                                 replyMarkup: postKeyboard,
                                 linkPreviewOptions: new() { IsDisabled = true },
                                 cancellationToken: ct);
-                            reply = $"✅ Опубликовано в <code>{BookService.EscapeHtml(arg)}</code>.\nID сообщения: <code>{posted.MessageId}</code>\nЗакрепи его руками в канале.";
+                            // Регистрируем канал на авто-репост меню «снизу»
+                            // после каждого нового поста.
+                            _db.SetChannelMenuMessageId(posted.Chat.Id, posted.MessageId);
+                            reply = $"✅ Опубликовано в <code>{BookService.EscapeHtml(arg)}</code>.\n\n" +
+                                    $"Канал подписан на авто-меню: после каждого нового поста бот будет переставлять это сообщение вниз. Чтобы это работало, у бота в канале должны быть права «Публиковать» и «Удалять сообщения».";
                             keyboard = null;
                         }
                         catch (Exception ex)
@@ -567,6 +562,67 @@ public class MessageHandler
         {
             _logger.LogError(ex, "[Bot] Ошибка при обработке сообщения от {User}", telegramUser.FirstName);
             await bot.SendMessage(chatId, "Что-то пошло не так. Попробуй снова 🙏", cancellationToken: ct);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // Канальное авто-меню
+    // ════════════════════════════════════════════════════════════
+
+    // Текст и инлайн-клавиатура поста-витрины. Используется и в /channelpost,
+    // и при переразмещении «снизу» после нового поста в канале.
+    private static (string Text, InlineKeyboardMarkup Keyboard) BuildChannelMenuPost(string botUsername)
+    {
+        InlineKeyboardButton DeepLink(string label, string section) =>
+            InlineKeyboardButton.WithUrl(label, $"https://t.me/{botUsername}?start={section}");
+        var keyboard = new InlineKeyboardMarkup(new[]
+        {
+            new[] { DeepLink("📖 Книги",   "books"),     DeepLink("🎧 Аудио",     "audio"),     DeepLink("📰 Статьи", "articles") },
+            new[] { DeepLink("🎙 Радио",   "radio"),     DeepLink("📔 Журналы",   "magazines"), DeepLink("👤 Авторы", "authors")  },
+            new[] { DeepLink("🤖 Подбери", "pick"),      DeepLink("🔍 Поиск",     "search") }
+        });
+        var text =
+            "📚 <b>Каталог Лио</b>\n\n" +
+            "Книги, аудиокниги, статьи, журналы и христианское радио — всё в одном месте.\n\n" +
+            "Нажми на любой раздел — откроется приватный чат с ботом.";
+        return (text, keyboard);
+    }
+
+    // На каждый новый пост в зарегистрированном канале — удаляем
+    // прошлое меню и постим новое, чтобы оно всегда было снизу.
+    // Свой собственный пост-меню узнаём по message id и пропускаем,
+    // иначе будет бесконечный цикл.
+    private async Task HandleChannelPostAsync(ITelegramBotClient bot, Message post, CancellationToken ct)
+    {
+        var chatId = post.Chat.Id;
+        if (!_db.IsChannelMenuRegistered(chatId)) return;
+
+        var lastMenuId = _db.GetChannelMenuMessageId(chatId);
+        if (lastMenuId == post.MessageId) return; // это и был наш пост-меню
+
+        try
+        {
+            var me = await bot.GetMe(ct);
+            var (text, keyboard) = BuildChannelMenuPost(me.Username!);
+
+            // Сначала шлём новое меню, потом удаляем старое — так у
+            // подписчиков нет «дыры» между удалением и постингом.
+            var fresh = await bot.SendMessage(chatId, text,
+                parseMode: ParseMode.Html,
+                replyMarkup: keyboard,
+                linkPreviewOptions: new() { IsDisabled = true },
+                cancellationToken: ct);
+            _db.SetChannelMenuMessageId(chatId, fresh.MessageId);
+
+            if (lastMenuId.HasValue)
+            {
+                try { await bot.DeleteMessage(chatId, lastMenuId.Value, ct); }
+                catch (Exception ex) { _logger.LogDebug(ex, "[Channel] Не удалось удалить старое меню {Id}", lastMenuId); }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Channel] Ошибка авто-репоста меню в {ChatId}", chatId);
         }
     }
 

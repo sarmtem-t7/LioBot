@@ -124,7 +124,10 @@ public class BotPollingService : BackgroundService
             {
                 Telegram.Bot.Types.Enums.UpdateType.Message,
                 Telegram.Bot.Types.Enums.UpdateType.CallbackQuery,
-                Telegram.Bot.Types.Enums.UpdateType.InlineQuery
+                Telegram.Bot.Types.Enums.UpdateType.InlineQuery,
+                // Канальные посты нужны, чтобы автоматически переставлять
+                // меню «вниз» после каждого нового поста в канале.
+                Telegram.Bot.Types.Enums.UpdateType.ChannelPost
             },
             DropPendingUpdates = true
         };
